@@ -1,0 +1,215 @@
+---
+title: "Production Deployment"
+description: "Harden, configure, and deploy RideShare Live to a production environment."
+---
+
+<Warning>
+  Never run production with default credentials, a weak JWT secret, or `AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=true`. Follow the checklist below before exposing the application to the internet.
+</Warning>
+
+## Production Checklist
+
+- [ ] Set `APP_ENV=production`
+- [ ] Generate a strong JWT secret (minimum 256-bit / 32 random bytes)
+- [ ] Replace all default PostgreSQL credentials
+- [ ] Set `AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=false` to stop leaking OTPs in API responses
+- [ ] Configure a real SMTP provider (Gmail, SendGrid, etc.) — not Mailpit
+- [ ] Set `STRIPE_SECRET_KEY` to your live Stripe key
+- [ ] Place the application behind an SSL/TLS-terminating reverse proxy (nginx, AWS ALB, Cloudflare)
+- [ ] Restrict `CORS_ORIGIN` to your actual frontend domain
+- [ ] Enable PostgreSQL SSL connections
+- [ ] Set `spring.jpa.hibernate.ddl-auto=validate` (not `create` or `update`)
+
+## Environment Variables
+
+```env
+# Application
+APP_ENV=production
+APP_URL=https://api.yourdomain.com
+CORS_ORIGIN=https://app.yourdomain.com
+
+# Database
+POSTGRES_DB=rideshare
+POSTGRES_USER=ridesharelive_user
+POSTGRES_PASSWORD=<strong-random-password>
+SPRING_DATASOURCE_USERNAME=ridesharelive_user
+SPRING_DATASOURCE_PASSWORD=<strong-random-password>
+
+# Redis
+SPRING_DATA_REDIS_HOST=<redis-host>
+SPRING_DATA_REDIS_PORT=6379
+SPRING_DATA_REDIS_PASSWORD=<redis-password>
+
+# JWT
+JWT_SECRET=<minimum-32-random-bytes-base64>
+JWT_EXPIRATION=3600000
+
+# Email (production SMTP)
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=noreply@yourdomain.com
+MAIL_PASSWORD=<app-password>
+MAIL_SMTP_AUTH=true
+MAIL_SMTP_STARTTLS_ENABLE=true
+MAIL_OTP_ENABLED=true
+AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=false
+
+# Payments
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_SUCCESS_URL=https://app.yourdomain.com/payment/success
+STRIPE_CANCEL_URL=https://app.yourdomain.com/payment/cancel
+```
+
+## application-prod.properties
+
+Create `src/main/resources/application-prod.properties` and activate it with `SPRING_PROFILES_ACTIVE=prod`:
+
+```properties
+# Disable SQL logging
+spring.jpa.show-sql=false
+spring.jpa.properties.hibernate.generate_statistics=false
+
+# Schema management — never auto-create in production
+spring.jpa.hibernate.ddl-auto=validate
+
+# HikariCP connection pool
+spring.datasource.hikari.maximum-pool-size=20
+spring.datasource.hikari.minimum-idle=5
+spring.datasource.hikari.connection-timeout=30000
+spring.datasource.hikari.idle-timeout=600000
+spring.datasource.hikari.max-lifetime=1800000
+
+# Redis cache timeout
+spring.cache.type=redis
+spring.data.redis.timeout=2000ms
+
+# Reduce log verbosity
+logging.level.root=WARN
+logging.level.com.example.backend=INFO
+```
+
+## Heroku Deployment
+
+<Steps>
+  <Step title="Install the Heroku CLI and log in">
+    ```bash
+    heroku login
+    ```
+  </Step>
+
+  <Step title="Create the Heroku app">
+    ```bash
+    heroku create ridesharelive
+    ```
+  </Step>
+
+  <Step title="Provision a PostgreSQL database">
+    ```bash
+    heroku addons:create heroku-postgresql:hobby-dev
+    ```
+  </Step>
+
+  <Step title="Set environment variables">
+    ```bash
+    heroku config:set APP_ENV=production
+    heroku config:set JWT_SECRET=<your-secret>
+    heroku config:set STRIPE_SECRET_KEY=sk_live_...
+    heroku config:set AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=false
+    # ... set all remaining variables
+    ```
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    git push heroku main
+    ```
+  </Step>
+
+  <Step title="Monitor logs">
+    ```bash
+    heroku logs --tail
+    ```
+  </Step>
+</Steps>
+
+## AWS EC2 Deployment
+
+<Steps>
+  <Step title="Provision an EC2 instance">
+    Launch an Amazon Linux 2 or Ubuntu instance. Open inbound port 8080 (or 443 behind a load balancer) in the security group.
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    # Ubuntu
+    sudo apt-get update
+    sudo apt-get install -y openjdk-17-jdk postgresql redis-server
+    ```
+  </Step>
+
+  <Step title="Clone the repository and configure">
+    ```bash
+    git clone https://github.com/yourusername/ridesharelive-backend.git
+    cd ridesharelive-backend
+    cp .env.example .env.aws
+    # Edit .env.aws with production values
+    ```
+  </Step>
+
+  <Step title="Use docker-compose.aws.yml (recommended)">
+    The repository includes `docker-compose.aws.yml` — a slimmed-down compose file that omits Mailpit (use a real SMTP provider instead) and does not expose PostgreSQL or Redis ports externally:
+
+    ```bash
+    docker compose -f docker-compose.aws.yml up -d
+    ```
+  </Step>
+
+  <Step title="Keep the process running with systemd or PM2">
+    If running the JAR directly (without Docker):
+
+    ```bash
+    npm install -g pm2
+    pm2 start "java -jar target/spring-boot-docker.jar" --name ridesharelive
+    pm2 save
+    pm2 startup
+    ```
+  </Step>
+</Steps>
+
+## CI/CD: GitHub Actions
+
+The following workflow builds, tests, and (optionally) deploys on every push to `main`:
+
+```yaml .github/workflows/build.yml
+name: Build & Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: mvn -q clean package -DskipTests
+
+      - name: Run tests
+        run: mvn test
+
+      - name: Build Docker image
+        run: docker build -t ridesharelive:${{ github.sha }} .
+
+      # Optional: push to Amazon ECR, Docker Hub, etc.
+      # - name: Push image
+      #   run: docker push ...
+```

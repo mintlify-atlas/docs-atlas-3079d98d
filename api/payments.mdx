@@ -1,0 +1,140 @@
+---
+title: "Payments API"
+description: "Create Stripe Checkout sessions and verify payment status for completed rides."
+---
+
+<Warning>
+  Both payment endpoints require a valid `STRIPE_SECRET_KEY` environment variable. If it is not set, all calls return `503 Service Unavailable`. Stripe errors (e.g. network failures or invalid API keys) return `502 Bad Gateway`.
+</Warning>
+
+All payment endpoints are under `/api/v1/payments` and require a valid Bearer token.
+
+## Stripe Checkout Flow
+
+<Steps>
+  <Step title="Create a checkout session">
+    Call `POST /payments/checkout-session` with the fare amount, a ride summary, and the payment mode. The server creates a Stripe Checkout session and returns a redirect `url`.
+  </Step>
+
+  <Step title="Redirect the user">
+    Send the user to the Stripe-hosted checkout page using the `url` returned in the previous step.
+  </Step>
+
+  <Step title="Stripe redirects back">
+    After payment, Stripe redirects to your `STRIPE_SUCCESS_URL` or `STRIPE_CANCEL_URL` with the `sessionId` as a query parameter.
+  </Step>
+
+  <Step title="Verify the session">
+    Call `GET /payments/verify-session/{sessionId}` to confirm the payment status server-side before marking the ride as paid.
+  </Step>
+</Steps>
+
+---
+
+## POST /payments/checkout-session
+
+Creates a Stripe Checkout session for a ride payment.
+
+**Requires auth.**
+
+### Request body
+
+<ParamField body="amountInInr" type="number" required>
+  Fare amount in Indian Rupees (INR). Must be a positive integer.
+</ParamField>
+
+<ParamField body="rideSummary" type="string">
+  Short description shown on the Stripe checkout page (e.g. `"Connaught Place → IGI Airport"`).
+</ParamField>
+
+<ParamField body="paymentMode" type="string">
+  Payment mode identifier passed through to Stripe metadata (e.g. `"ONLINE"`, `"CARD"`).
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="url" type="string">
+  Stripe-hosted checkout URL. Redirect the user here to complete payment.
+</ResponseField>
+
+<ResponseField name="sessionId" type="string">
+  Stripe Checkout session ID. Store this to verify the payment later.
+</ResponseField>
+
+### Error responses
+
+| Status | Condition |
+|---|---|
+| `400` | `amountInInr` is missing or not a positive number |
+| `503` | Stripe API key is not configured |
+| `502` | Stripe returned an error |
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/payments/checkout-session \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amountInInr": 320,
+    "rideSummary": "Connaught Place → IGI Airport",
+    "paymentMode": "ONLINE"
+  }'
+```
+
+```json Response
+{
+  "url": "https://checkout.stripe.com/c/pay/cs_test_abc123...",
+  "sessionId": "cs_test_abc123..."
+}
+```
+</CodeGroup>
+
+---
+
+## GET /payments/verify-session/{sessionId}
+
+Retrieves and verifies the status of a Stripe Checkout session after the user returns from the Stripe-hosted page.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="sessionId" type="string" required>
+  Stripe Checkout session ID returned by `POST /payments/checkout-session`.
+</ParamField>
+
+### Response — 200
+
+Returns the session verification result from `PaymentService.verifyCheckoutSession`. Includes the Stripe payment status so the client can confirm success before updating ride state.
+
+<ResponseField name="status" type="string">
+  Stripe payment status (e.g. `"paid"`, `"unpaid"`, `"no_payment_required"`).
+</ResponseField>
+
+<ResponseField name="sessionId" type="string">
+  The verified session ID.
+</ResponseField>
+
+### Error responses
+
+| Status | Condition |
+|---|---|
+| `400` | Invalid or malformed session ID |
+| `503` | Stripe API key is not configured |
+| `502` | Stripe returned an error while retrieving the session |
+
+<CodeGroup>
+```bash curl
+curl http://localhost:8080/api/v1/payments/verify-session/cs_test_abc123 \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+{
+  "sessionId": "cs_test_abc123",
+  "status": "paid",
+  "amountTotal": 32000,
+  "currency": "inr"
+}
+```
+</CodeGroup>

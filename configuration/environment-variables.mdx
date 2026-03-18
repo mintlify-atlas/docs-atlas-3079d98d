@@ -1,0 +1,145 @@
+---
+title: "Environment Variables"
+---
+
+<Warning>
+Never commit your `.env` file or any file containing real credentials to version control. Add `.env` to your `.gitignore` before the first commit.
+</Warning>
+
+RideShare Live reads all sensitive configuration from environment variables. The backend resolves each variable with a Spring Boot placeholder in the form `${VAR_NAME:default}`. The table below lists every variable, its purpose, an example value, and whether it is required.
+
+## Database
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `SPRING_DATASOURCE_URL` | Full JDBC connection string for PostgreSQL | `jdbc:postgresql://localhost:5432/rideshare` | Yes (postgres profile) |
+| `SPRING_DATASOURCE_USERNAME` | PostgreSQL username | `postgres` | Yes (postgres profile) |
+| `SPRING_DATASOURCE_PASSWORD` | PostgreSQL password | `postgres` | Yes (postgres profile) |
+| `POSTGRES_DB` | Database name used by the Docker Compose `postgresdb` service | `rideshare` | Docker only |
+| `POSTGRES_USER` | Superuser for the Docker Compose `postgresdb` service | `postgres` | Docker only |
+| `POSTGRES_PASSWORD` | Password for the Docker Compose `postgresdb` service | `postgres` | Docker only |
+
+## Redis
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `SPRING_DATA_REDIS_HOST` | Redis hostname | `localhost` | No (defaults to `localhost`) |
+| `SPRING_DATA_REDIS_PORT` | Redis port | `6379` | No (defaults to `6379`) |
+| `SPRING_DATA_REDIS_PASSWORD` | Redis password (leave empty for no-auth) | _(empty)_ | No |
+
+## JWT
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `app.jwt.secret` | HMAC signing key for JWT tokens | `ridesharelive-super-secret-...` | Yes |
+| `app.jwt.access-expiration-ms` | Access token lifetime in milliseconds | `900000` (15 min) | No |
+| `app.jwt.refresh-expiration-ms` | Refresh token lifetime in milliseconds | `604800000` (7 days) | No |
+
+<Tip>
+`app.jwt.secret` must be at least 256 bits (32 characters) for the HS256 algorithm used by the JWT library. Shorter keys will cause a startup exception. Use a randomly generated string of 40+ characters in production.
+</Tip>
+
+## Email (Gmail SMTP)
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `MAIL_HOST` | SMTP server hostname | `smtp.gmail.com` | Yes (if OTP email enabled) |
+| `MAIL_PORT` | SMTP port | `587` | No (defaults to `587`) |
+| `MAIL_USERNAME` | Gmail address used as the sender | `yourapp@gmail.com` | Yes (if OTP email enabled) |
+| `MAIL_PASSWORD` | 16-character Google App Password | `abcd efgh ijkl mnop` | Yes (if OTP email enabled) |
+| `MAIL_SMTP_AUTH` | Enable SMTP authentication | `true` | No (defaults to `true`) |
+| `MAIL_SMTP_STARTTLS_ENABLE` | Enable STARTTLS | `true` | No (defaults to `true`) |
+| `MAIL_OTP_ENABLED` | Send OTP emails on signup | `false` | No |
+| `MAIL_FROM_ADDRESS` | The From address shown to recipients | `yourapp@gmail.com` | No |
+| `MAIL_FROM_NAME` | The From display name | `RideShare Live` | No |
+| `MAIL_SKIP_IF_NO_SMTP_HOST` | Skip silently if no SMTP host is configured | `true` | No |
+
+## Twilio (SMS)
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID from the console | `ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | Yes (if SMS enabled) |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token | `your_auth_token` | Yes (if SMS enabled) |
+| `TWILIO_PHONE_NUMBER` | Twilio sending phone number | `+15005550006` | Yes (if SMS enabled) |
+
+## Stripe
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `STRIPE_SECRET_KEY` | Stripe secret API key | `sk_test_...` | Yes (if card payments enabled) |
+| `STRIPE_CURRENCY` | ISO 4217 currency code | `inr` | No (defaults to `inr`) |
+| `STRIPE_SUCCESS_URL` | Redirect URL after successful Stripe Checkout | `http://localhost:5173` | No |
+| `STRIPE_CANCEL_URL` | Redirect URL after cancelled Stripe Checkout | `http://localhost:5173` | No |
+
+## Google Maps
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `GOOGLE_MAPS_API_KEY` | Google Maps Platform API key for location features | `AIzaSy...` | Yes (if Maps integration enabled) |
+
+## Application / Swagger
+
+| Variable | Description | Example | Required |
+|---|---|---|---|
+| `SWAGGER_USERNAME` | HTTP Basic username to access Swagger UI | `swagger-admin` | No (defaults to `swagger-admin`) |
+| `SWAGGER_PASSWORD` | HTTP Basic password to access Swagger UI | `change-me-swagger` | No |
+| `AUTH_SIGNUP_OTP_ENABLED` | Require email OTP during signup | `true` | No |
+| `AUTH_SIGNUP_OTP_TTL_SECONDS` | OTP validity window | `300` | No |
+| `AUTH_SIGNUP_OTP_RESEND_DELAY_SECONDS` | Minimum seconds between OTP resend requests | `30` | No |
+| `AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP` | Return OTP in the API response (dev only) | `false` | No |
+| `OPENAI_API_KEY` | OpenAI API key for AI features | `sk-...` | No |
+| `OPENAI_MODEL` | OpenAI model identifier | `gpt-4o-mini` | No |
+
+## Sample `.env` file
+
+```env
+# ===================== DATABASE =====================
+SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/rideshare
+SPRING_DATASOURCE_USERNAME=postgres
+SPRING_DATASOURCE_PASSWORD=postgres
+POSTGRES_DB=rideshare
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+
+# ===================== REDIS =====================
+SPRING_DATA_REDIS_HOST=localhost
+SPRING_DATA_REDIS_PORT=6379
+SPRING_DATA_REDIS_PASSWORD=
+
+# ===================== JWT =====================
+# Must be 32+ characters
+JWT_SECRET=ridesharelive-super-secret-signing-key-change-this-in-prod-2026
+
+# ===================== EMAIL (Gmail SMTP) =====================
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=yourapp@gmail.com
+MAIL_PASSWORD=abcdefghijklmnop
+MAIL_FROM_ADDRESS=yourapp@gmail.com
+MAIL_FROM_NAME=RideShare Live
+MAIL_OTP_ENABLED=true
+
+# ===================== SMS (Twilio) =====================
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_auth_token
+TWILIO_PHONE_NUMBER=+15005550006
+
+# ===================== PAYMENT (Stripe) =====================
+STRIPE_SECRET_KEY=sk_test_51...
+STRIPE_CURRENCY=inr
+STRIPE_SUCCESS_URL=http://localhost:5173
+STRIPE_CANCEL_URL=http://localhost:5173
+
+# ===================== GOOGLE MAPS =====================
+GOOGLE_MAPS_API_KEY=AIzaSy...
+
+# ===================== SWAGGER =====================
+SWAGGER_USERNAME=swagger-admin
+SWAGGER_PASSWORD=change-me-swagger
+
+# ===================== SIGNUP OTP =====================
+AUTH_SIGNUP_OTP_ENABLED=true
+AUTH_SIGNUP_OTP_TTL_SECONDS=300
+AUTH_SIGNUP_OTP_RESEND_DELAY_SECONDS=30
+AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=false
+```

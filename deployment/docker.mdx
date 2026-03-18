@@ -1,0 +1,212 @@
+---
+title: "Docker"
+description: "Run RideShare Live locally using Docker Compose with PostgreSQL, Redis, and Mailpit."
+---
+
+## Overview
+
+RideShare Live ships with a `docker-compose.yml` that starts four services together:
+
+| Service | Image | Port(s) |
+|---|---|---|
+| `server` | Built from `Dockerfile` (Java 17 / Spring Boot) | `8080` |
+| `postgresdb` | `postgis/postgis:16-3.4` | `5432` |
+| `redis` | `redis:7-alpine` | `6379` |
+| `mailpit` | `axllent/mailpit:v1.27` | `1025` (SMTP), `8025` (Web UI) |
+
+The Spring Boot application does **not** start until both `postgresdb` and `redis` pass their health checks, and until `mailpit` has started.
+
+<Note>
+  Port `8025` exposes the Mailpit web UI where you can inspect all outgoing emails (including OTP codes) during local development. Port `1025` is the SMTP endpoint that the backend connects to.
+</Note>
+
+## docker-compose.yml
+
+```yaml docker-compose.yml
+services:
+  mailpit:
+    image: "axllent/mailpit:v1.27"
+    restart: always
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  redis:
+    image: "redis:7-alpine"
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgresdb:
+    image: "postgis/postgis:16-3.4"
+    restart: always
+    env_file:
+      - .env.aws
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rideshare}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-rideshare}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    env_file:
+      - .env.aws
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: postgres
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://postgresdb:5432/${POSTGRES_DB:-rideshare}"
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-postgres}
+      SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
+      MAIL_HOST: ${MAIL_HOST:-mailpit}
+      MAIL_PORT: ${MAIL_PORT:-1025}
+      AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP: ${AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP:-true}
+    depends_on:
+      mailpit:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      postgresdb:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+```
+
+## Dockerfile
+
+The image uses a two-stage build to keep the final image small:
+
+```dockerfile Dockerfile
+# Stage 1 — build the JAR
+FROM maven:3.9.9-eclipse-temurin-17 AS build
+WORKDIR /app
+COPY .mvn .mvn
+COPY mvnw .
+COPY pom.xml .
+COPY src src
+RUN chmod +x mvnw && ./mvnw -q -DskipTests package
+
+# Stage 2 — minimal JRE runtime
+FROM eclipse-temurin:17-jre
+WORKDIR /
+EXPOSE 8080
+COPY --from=build /app/target/spring-boot-docker.jar /spring-boot-docker.jar
+ENTRYPOINT ["java","-jar","/spring-boot-docker.jar"]
+```
+
+## Deploying with Docker Compose
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/yourusername/ridesharelive-backend.git
+    cd ridesharelive-backend
+    ```
+  </Step>
+
+  <Step title="Create the environment file">
+    Copy the example file and fill in your values. At minimum, set a JWT secret and your Stripe key if you want payments enabled.
+
+    ```bash
+    cp .env.example .env.aws
+    ```
+
+    Key variables used by `docker-compose.yml`:
+
+    ```env
+    POSTGRES_DB=rideshare
+    POSTGRES_USER=postgres
+    POSTGRES_PASSWORD=postgres
+    SPRING_DATASOURCE_USERNAME=postgres
+    SPRING_DATASOURCE_PASSWORD=postgres
+    SPRING_DATA_REDIS_HOST=redis
+    SPRING_DATA_REDIS_PORT=6379
+    MAIL_HOST=mailpit
+    MAIL_PORT=1025
+    AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=true
+    ```
+  </Step>
+
+  <Step title="Build the application image">
+    Maven downloads dependencies and compiles the JAR inside the Docker build — no local Java required.
+
+    ```bash
+    docker compose build
+    ```
+  </Step>
+
+  <Step title="Start all services">
+    ```bash
+    docker compose up -d
+    ```
+
+    Docker Compose starts `mailpit` and the infrastructure services first, waits for their health checks, then starts the Spring Boot server.
+  </Step>
+
+  <Step title="Verify the stack is running">
+    ```bash
+    docker compose ps
+    ```
+
+    The backend exposes a health endpoint:
+
+    ```bash
+    curl http://localhost:8080/health
+    # {"status":"UP"}
+    ```
+  </Step>
+</Steps>
+
+## Health Checks and Startup Order
+
+The `server` service declares the following dependencies:
+
+```
+mailpit  → condition: service_started
+redis    → condition: service_healthy  (redis-cli ping)
+postgresdb → condition: service_healthy  (pg_isready)
+```
+
+Both `redis` and `postgresdb` are polled every 10 seconds with a 5-second timeout, up to 5 retries before Compose marks them as unhealthy and aborts startup.
+
+## Useful Commands
+
+```bash
+# Tail logs from all services
+docker compose logs -f
+
+# Tail logs from a single service
+docker compose logs -f server
+
+# Restart the backend only (pick up config changes)
+docker compose restart server
+
+# Scale the backend (requires a load balancer in front)
+docker compose up -d --scale server=2
+
+# Stop and remove containers (data volume is preserved)
+docker compose down
+
+# Stop and remove containers AND delete the postgres volume
+docker compose down -v
+```

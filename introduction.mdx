@@ -1,0 +1,96 @@
+---
+title: "Introduction"
+description: "RideShare Live is a full-stack ride-sharing SaaS built with Spring Boot 3 and React 19, featuring real-time WebSocket tracking, JWT authentication with OTP verification, and Stripe payments."
+---
+
+RideShare Live is a production-ready ride-sharing platform designed for self-hosting. It connects riders and drivers through a real-time, event-driven architecture built on Spring Boot 3 and React 19. Riders book trips, drivers accept requests, and both sides track the ride in real time over a STOMP WebSocket connection.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get the backend and frontend running locally in minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand how the Spring Boot backend, React frontend, and WebSocket broker fit together.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Browse all REST endpoints for auth, rides, payments, and notifications.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Set up environment variables, database connections, and third-party service credentials.
+  </Card>
+</CardGroup>
+
+## Key features
+
+<Tabs>
+  <Tab title="Auth & security">
+    - JWT access tokens signed with HMAC-SHA256, issued on login
+    - OTP verification via Gmail SMTP — new accounts must verify email before signing in
+    - Refresh token rotation stored in the `refresh_tokens` table
+    - Role-based access control: `USER` (rider), `DRIVER`, and `ADMIN`
+    - BCrypt password hashing via Spring Security
+    - Stateless session management — no server-side sessions
+  </Tab>
+  <Tab title="Real-time tracking">
+    - STOMP over WebSocket with two endpoints: `/ws` (native) and `/ws-sockjs` (SockJS fallback)
+    - In-bound channel interceptor validates the JWT on every STOMP `CONNECT` frame
+    - Simple in-memory broker on `/topic` and `/queue` destinations
+    - Driver location updates broadcast to riders over topic subscriptions
+    - In-app notification center for ride and payment events
+  </Tab>
+  <Tab title="Payments">
+    - Stripe Checkout session creation via the `stripe-java` SDK (v26.12.0)
+    - Session verification on return to confirm payment before marking a ride paid
+    - Transaction history persisted to the `payments` table
+    - Refund management through the Stripe dashboard
+  </Tab>
+  <Tab title="Dashboards">
+    - **Rider dashboard** — book rides, estimate fare, view ride history, track active trip in real time
+    - **Driver dashboard** — see incoming ride requests, accept or reject, update ride milestones, monitor earnings
+    - Quick fare estimator on the landing page calls `GET /rides/estimate` without requiring a login
+    - Live map panel using browser Geolocation and a tile-based map renderer
+  </Tab>
+</Tabs>
+
+## Tech stack
+
+<Tabs>
+  <Tab title="Backend">
+    | Component | Technology |
+    |---|---|
+    | Framework | Spring Boot 3.5.3 |
+    | Language | Java 17 |
+    | ORM | Spring Data JPA + Hibernate |
+    | Database | PostgreSQL 14+ |
+    | Caching | Redis (spring-boot-starter-data-redis) |
+    | Security | Spring Security + JJWT 0.12.x |
+    | Real-time | Spring WebSocket + STOMP |
+    | Payments | stripe-java 26.12.0 |
+    | API docs | springdoc-openapi 2.8.5 |
+    | Utilities | Lombok, ZXing (QR), Spring AI (OpenAI SDK) |
+    | Build | Maven |
+  </Tab>
+  <Tab title="Frontend">
+    | Component | Technology |
+    |---|---|
+    | Framework | React 19.1 |
+    | Build tool | Vite 7 |
+    | Styling | Tailwind CSS 3.4 |
+    | WebSocket client | @stomp/stompjs 7.3 |
+    | 3D / animation | Three.js 0.183, Motion 12 |
+    | Scroll | Locomotive Scroll 5 |
+    | Tilt effects | vanilla-tilt 1.8 |
+    | Testing | Vitest 4 + Playwright + Testing Library |
+  </Tab>
+  <Tab title="Infrastructure">
+    | Component | Technology |
+    |---|---|
+    | Containers | Docker + Docker Compose |
+    | Email | Gmail SMTP (port 587, STARTTLS) |
+    | SMS | Twilio |
+    | Maps | Google Maps API |
+    | Push notifications | Firebase |
+    | CI/CD | GitHub Actions |
+    | Deployment targets | AWS / Azure / GCP / Heroku |
+  </Tab>
+</Tabs>

@@ -1,0 +1,108 @@
+---
+title: "API Overview"
+description: "Base URL, authentication, request format, and error codes for the RideShare Live REST API."
+---
+
+## Base URL
+
+```
+http://localhost:8080
+```
+
+In production, set `APP_URL` to your deployed domain (e.g. `https://api.yourdomain.com`). All endpoints are served under the `/api/v1` context path, as configured by `server.servlet.context-path=/api/v1` in `application.properties`.
+
+Full example:
+
+```
+POST http://localhost:8080/api/v1/auth/login
+```
+
+## Authentication
+
+Most endpoints require a JWT access token. Include it as a Bearer token in the `Authorization` header:
+
+```bash
+curl -X GET http://localhost:8080/api/v1/rides/history \
+  -H "Authorization: Bearer <your-access-token>"
+```
+
+Obtain a token by calling [POST /auth/login](/api/auth). The response includes `token`, `refreshToken`, and `expiresIn` (seconds).
+
+## Request / Response Format
+
+All request and response bodies use JSON. Set `Content-Type: application/json` on requests that include a body.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "rider@example.com", "password": "secret"}'
+```
+
+## Error Codes
+
+| Code | Meaning |
+|---|---|
+| `200` | Success |
+| `201` | Created |
+| `400` | Bad request — missing or invalid fields |
+| `401` | Unauthorized — missing, expired, or invalid token |
+| `403` | Forbidden — authenticated but not permitted |
+| `404` | Resource not found |
+| `429` | Rate limited — too many requests (e.g. OTP requests) |
+| `502` | Bad gateway — upstream service error (e.g. Stripe) |
+| `503` | Service unavailable — upstream not configured (e.g. Stripe key missing) |
+
+Error responses return a JSON body with a `message` field:
+
+```json
+{
+  "message": "email and password are required."
+}
+```
+
+Rate-limit responses also include `retryAfterSeconds`:
+
+```json
+{
+  "message": "Too many OTP requests. Please wait before trying again.",
+  "retryAfterSeconds": 60
+}
+```
+
+## Endpoints
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="lock" href="/api/auth">
+    Signup with OTP verification, login, token refresh, and logout.
+  </Card>
+  <Card title="Rides" icon="car" href="/api/rides">
+    Book rides, estimate fares, update status, submit feedback, and track drivers.
+  </Card>
+  <Card title="Payments" icon="credit-card" href="/api/payments">
+    Create Stripe Checkout sessions and verify payment status.
+  </Card>
+  <Card title="Notifications" icon="bell" href="/api/notifications">
+    Fetch in-app notifications and mark them as read.
+  </Card>
+  <Card title="WebSocket" icon="plug" href="/api/websocket">
+    Real-time ride and location updates via STOMP over WebSocket.
+  </Card>
+</CardGroup>
+
+## Health Check
+
+Two public endpoints are available without authentication:
+
+```bash
+# Liveness check
+curl http://localhost:8080/health
+# {"status":"UP"}
+
+# Root
+curl http://localhost:8080/
+# {"message":"Backend is running"}
+```
+
+<Note>
+  The health endpoints are at the root path — **not** under `/api/v1`. They are served directly by the Spring Boot application before the context path is applied.
+</Note>

@@ -1,97 +1,104 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "RideShare Live"
+description: "A modern, full-stack ride-sharing platform with real-time location tracking, JWT authentication, Stripe payments, and role-based dashboards for riders and drivers."
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get RideShare Live running locally in minutes — backend, frontend, and database.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Explore the system design: Spring Boot backend, React frontend, WebSockets, and PostgreSQL.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Browse all REST endpoints — authentication, rides, payments, notifications, and WebSocket.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Configuration" icon="gear" href="/configuration/environment-variables">
+    Set up environment variables, database connections, and third-party service credentials.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is RideShare Live?
 
-Everything you need to create world-class documentation.
+RideShare Live is a production-ready ride-sharing platform built with **Spring Boot 3** on the backend and **React 19** on the frontend. It supports two user roles — **Riders** and **Drivers** — with separate dashboards and real-time coordination via WebSocket.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Info>
+  RideShare Live is designed for self-hosting. You bring your own PostgreSQL database, Redis instance, Stripe account, and email credentials.
+</Info>
 
-## Need inspiration?
+## Key features
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="JWT Authentication" icon="shield-halved" href="/features/authentication">
+    OTP-verified signup, JWT access tokens, refresh token rotation, and role-based access control.
+  </Card>
+  <Card title="Real-Time Tracking" icon="location-dot" href="/features/real-time-tracking">
+    Live driver location updates over STOMP WebSocket with in-browser map visualization.
+  </Card>
+  <Card title="Ride Management" icon="car" href="/features/ride-booking">
+    Book, schedule, accept, reject, cancel rides, and track status end-to-end.
+  </Card>
+  <Card title="Stripe Payments" icon="credit-card" href="/features/payments">
+    Stripe Checkout integration with session verification and ride payment confirmation.
+  </Card>
+  <Card title="Notifications" icon="bell" href="/features/notifications">
+    In-app notification center with real-time ride and payment alerts.
+  </Card>
+  <Card title="Driver Dashboard" icon="steering-wheel" href="/roles/driver">
+    Driver-specific view: accept ride requests, update location, complete trips.
+  </Card>
+</CardGroup>
+
+## Tech stack
+
+<Tabs>
+  <Tab title="Backend">
+    | Component | Technology |
+    |-----------|-----------|
+    | Framework | Spring Boot 3 |
+    | Language | Java 17 |
+    | Database | PostgreSQL 14+ |
+    | Caching | Redis |
+    | Auth | JWT (HMAC-SHA256) |
+    | Real-time | STOMP over WebSocket |
+    | Payments | Stripe Checkout |
+    | Build | Maven |
+  </Tab>
+  <Tab title="Frontend">
+    | Component | Technology |
+    |-----------|-----------|
+    | Framework | React 19 |
+    | Build Tool | Vite |
+    | Styling | Tailwind CSS |
+    | Real-time | @stomp/stompjs |
+    | 3D Effects | Three.js |
+    | Animation | Motion |
+    | Testing | Vitest + Playwright |
+  </Tab>
+  <Tab title="Infrastructure">
+    | Component | Technology |
+    |-----------|-----------|
+    | Containers | Docker + Docker Compose |
+    | Email | Gmail SMTP |
+    | SMS | Twilio |
+    | Maps | Google Maps API |
+    | Push | Firebase |
+  </Tab>
+</Tabs>
+
+## Get started
+
+<Steps>
+  <Step title="Set up prerequisites">
+    Install Java 17, Maven, PostgreSQL 14+, Redis, and Node.js 18+. See the [quickstart guide](/quickstart) for platform-specific instructions.
+  </Step>
+  <Step title="Configure environment">
+    Copy `.env.example` to `.env` and fill in your database credentials, JWT secret, and third-party API keys. See [environment variables](/configuration/environment-variables).
+  </Step>
+  <Step title="Start the backend">
+    Run `mvn spring-boot:run` from `ridesharelive-backend-main/`. The API will be available at `http://localhost:8080`.
+  </Step>
+  <Step title="Start the frontend">
+    Run `npm install && npm run dev` from `ridesharelive-frontend-main/`. The app will be available at `http://localhost:5173`.
+  </Step>
+</Steps>

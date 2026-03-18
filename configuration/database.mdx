@@ -1,0 +1,269 @@
+---
+title: "Database Setup"
+---
+
+RideShare Live uses **PostgreSQL 14+** as its primary datastore and **Redis 6+** for caching, sessions, and driver location data. The JPA layer is managed by Spring Data JPA with Hibernate.
+
+## Initial database setup
+
+<Steps>
+  <Step title="Install PostgreSQL">
+    <Tabs>
+      <Tab title="macOS">
+        ```bash
+        brew install postgresql
+        brew services start postgresql
+        ```
+      </Tab>
+      <Tab title="Ubuntu / Debian">
+        ```bash
+        sudo apt-get install postgresql postgresql-contrib
+        sudo service postgresql start
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```bash
+        winget install PostgreSQL
+        ```
+      </Tab>
+      <Tab title="Docker">
+        ```bash
+        docker run -d \
+          --name rideshare-postgres \
+          -e POSTGRES_DB=rideshare \
+          -e POSTGRES_USER=postgres \
+          -e POSTGRES_PASSWORD=postgres \
+          -p 5432:5432 \
+          postgis/postgis:16-3.4
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Create the database and user">
+    ```sql
+    psql -U postgres
+
+    CREATE DATABASE ridesharelive;
+    CREATE USER ridesharelive_user WITH PASSWORD 'secure_password';
+    ALTER ROLE ridesharelive_user SET client_encoding TO 'utf8';
+    GRANT ALL PRIVILEGES ON DATABASE ridesharelive TO ridesharelive_user;
+    ```
+  </Step>
+  <Step title="Configure the datasource">
+    Set the following environment variables (or add them to your `.env`):
+
+    ```env
+    SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/rideshare
+    SPRING_DATASOURCE_USERNAME=ridesharelive_user
+    SPRING_DATASOURCE_PASSWORD=secure_password
+    ```
+
+    Then activate the `postgres` Spring profile:
+
+    ```bash
+    SPRING_PROFILES_ACTIVE=postgres mvn spring-boot:run
+    ```
+  </Step>
+  <Step title="Let Hibernate create the schema">
+    The default `spring.jpa.hibernate.ddl-auto=update` in `application.properties` creates and migrates tables automatically on startup. No manual DDL execution is required for development.
+  </Step>
+  <Step title="Create performance indexes">
+    After the first startup (tables will exist), run the index DDL:
+
+    ```sql
+    CREATE INDEX idx_user_email ON users(email);
+    CREATE INDEX idx_ride_user  ON rides(user_id);
+    CREATE INDEX idx_ride_status ON rides(status);
+    ```
+  </Step>
+</Steps>
+
+## Database schema
+
+The following DDL matches the entity definitions in `User.java`, `UserSettings.java`, and the README schema.
+
+### Users table
+
+```sql
+CREATE TABLE users (
+  id                  BIGSERIAL PRIMARY KEY,
+  name                VARCHAR(255),
+  email               VARCHAR(255) UNIQUE NOT NULL,
+  password            VARCHAR(255) NOT NULL,
+  role                VARCHAR(20),
+  is_verified         BOOLEAN DEFAULT false,
+  rating              DECIMAL(3,2),
+  total_rides         INT DEFAULT 0,
+  created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### User settings table
+
+Managed by `UserSettings.java`. One row per user, linked by `user_id`.
+
+```sql
+CREATE TABLE user_settings (
+  id                        BIGSERIAL PRIMARY KEY,
+  user_id                   BIGINT UNIQUE NOT NULL,
+  trip_sharing_default      BOOLEAN NOT NULL DEFAULT true,
+  hide_phone_number         BOOLEAN NOT NULL DEFAULT false,
+  emergency_contact         VARCHAR(40) NOT NULL DEFAULT '',
+  default_payment_method    VARCHAR(20) NOT NULL DEFAULT 'upi',
+  auto_tip_enabled          BOOLEAN NOT NULL DEFAULT false,
+  invoice_email_enabled     BOOLEAN NOT NULL DEFAULT true,
+  map_style                 VARCHAR(20) NOT NULL DEFAULT 'standard',
+  avoid_tolls               BOOLEAN NOT NULL DEFAULT false,
+  avoid_highways            BOOLEAN NOT NULL DEFAULT false,
+  navigation_voice_language VARCHAR(12) NOT NULL DEFAULT 'en',
+  preferred_vehicle_type    VARCHAR(20) NOT NULL DEFAULT 'mini',
+  ac_preference             VARCHAR(20) NOT NULL DEFAULT 'any',
+  quiet_ride                BOOLEAN NOT NULL DEFAULT false,
+  delete_account_requested  BOOLEAN NOT NULL DEFAULT false,
+  created_at                TIMESTAMP NOT NULL,
+  updated_at                TIMESTAMP NOT NULL
+);
+```
+
+### Rides table
+
+```sql
+CREATE TABLE rides (
+  id                  BIGSERIAL PRIMARY KEY,
+  user_id             BIGINT REFERENCES users(id),
+  driver_id           BIGINT REFERENCES users(id),
+  status              VARCHAR(50),
+  pickup_location     VARCHAR(500),
+  drop_location       VARCHAR(500),
+  fare                DECIMAL(10,2),
+  payment_mode        VARCHAR(50),
+  payment_status      VARCHAR(50),
+  payment_reference   VARCHAR(255),
+  distance_km         DECIMAL(10,2),
+  driver_lat          DECIMAL(10,8),
+  driver_lon          DECIMAL(11,8),
+  start_otp           VARCHAR(10),
+  end_otp             VARCHAR(10),
+  rider_rating        INT,
+  driver_rating       INT,
+  rider_feedback      TEXT,
+  driver_feedback     TEXT,
+  cancelled_by        VARCHAR(50),
+  cancellation_reason TEXT,
+  cancellation_fee    DECIMAL(10,2),
+  requested_at        TIMESTAMP,
+  accepted_at         TIMESTAMP,
+  completed_at        TIMESTAMP,
+  created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Payments table
+
+```sql
+CREATE TABLE payments (
+  id                      BIGSERIAL PRIMARY KEY,
+  ride_id                 BIGINT REFERENCES rides(id),
+  user_id                 BIGINT REFERENCES users(id),
+  amount                  DECIMAL(10,2),
+  payment_method          VARCHAR(50),
+  stripe_transaction_id   VARCHAR(255),
+  status                  VARCHAR(50),
+  created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+## application.properties JPA settings
+
+The relevant JPA and datasource settings from `application.properties` and `application-postgres.properties`:
+
+```properties
+# Hibernate schema management
+spring.jpa.hibernate.ddl-auto=update
+
+# Force UTC for all JDBC timestamps
+spring.jpa.properties.hibernate.jdbc.time_zone=UTC
+
+# Disable the open-session-in-view anti-pattern
+spring.jpa.open-in-view=false
+
+# PostgreSQL dialect (activated via the postgres Spring profile)
+spring.datasource.url=${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/rideshare}
+spring.datasource.username=${SPRING_DATASOURCE_USERNAME:postgres}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:postgres}
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+
+# HikariCP connection pool (production tuning)
+spring.datasource.hikari.maximum-pool-size=20
+spring.datasource.hikari.minimum-idle=5
+```
+
+## Redis configuration
+
+Redis is used for OTP storage, driver location caching, and session data.
+
+```properties
+spring.data.redis.host=${SPRING_DATA_REDIS_HOST:localhost}
+spring.data.redis.port=${SPRING_DATA_REDIS_PORT:6379}
+spring.data.redis.password=${SPRING_DATA_REDIS_PASSWORD:}
+spring.data.redis.timeout=2000ms
+```
+
+### Install and start Redis
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    brew install redis
+    brew services start redis
+    redis-cli ping   # should return PONG
+    ```
+  </Tab>
+  <Tab title="Ubuntu / Debian">
+    ```bash
+    sudo apt-get install redis-server
+    sudo service redis-server start
+    redis-cli ping
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker run -d --name rideshare-redis -p 6379:6379 redis:7-alpine
+    ```
+  </Tab>
+</Tabs>
+
+## Performance indexes
+
+Create these indexes after the schema exists to speed up the most common queries:
+
+```sql
+-- Fast email lookup during authentication
+CREATE INDEX idx_user_email ON users(email);
+
+-- Fast ride history queries by rider
+CREATE INDEX idx_ride_user ON rides(user_id);
+
+-- Fast filtering of active / requested rides
+CREATE INDEX idx_ride_status ON rides(status);
+```
+
+## Docker Compose (full stack)
+
+The `docker-compose.aws.yml` in the backend root starts PostgreSQL, Redis, and the Spring Boot server together:
+
+```bash
+# Start all services
+docker compose -f docker-compose.aws.yml up -d
+
+# Follow logs
+docker compose -f docker-compose.aws.yml logs -f server
+
+# Stop
+docker compose -f docker-compose.aws.yml down
+```
+
+The compose file uses `postgis/postgis:16-3.4` for the database and `redis:7-alpine` for caching, with health checks that prevent the Spring Boot service from starting before both dependencies are ready.

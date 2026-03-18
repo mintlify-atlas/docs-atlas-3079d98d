@@ -1,0 +1,196 @@
+---
+title: "Notifications"
+---
+
+RideShare Live delivers real-time notifications to users when ride events occur and payment confirmations are issued. Notifications are pushed over WebSocket and persisted in PostgreSQL so users can review them later.
+
+## Notification entity
+
+The `Notification` entity (`notifications` table) captures every in-app notification:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Long | Auto-generated primary key |
+| `userId` | Long | Recipient's user ID |
+| `rideId` | Long | Associated ride ID (nullable) |
+| `title` | String (120) | Short notification heading |
+| `message` | String (800) | Full notification body |
+| `channel` | String (20) | Delivery channel, e.g. `IN_APP` |
+| `eventType` | String (40) | Event that triggered the notification |
+| `read` | Boolean | Whether the user has read it (default `false`) |
+| `createdAt` | Instant | Creation timestamp (default `Instant.now()`) |
+| `deliveredAt` | Instant | When it was delivered over WebSocket |
+| `status` | String (20) | Delivery status, e.g. `DELIVERED`, `READ` |
+
+## Notification types
+
+<CardGroup cols={2}>
+  <Card title="Ride updates" icon="car">
+    Fired on every ride status transition: `REQUESTED`, `ACCEPTED`, `PICKED`, `COMPLETED`, and `CANCELLED`. Both rider and driver receive a notification at each step.
+  </Card>
+  <Card title="Ride OTP emails" icon="envelope">
+    When a driver accepts a ride the backend calls `notificationService.sendRideOtpEmails(updatedRide)` to email the pickup and completion OTPs to the rider.
+  </Card>
+</CardGroup>
+
+## Endpoints
+
+### GET /notifications/history
+
+Fetches all notifications for the authenticated user, along with the unread count.
+
+**Response**
+
+```json
+{
+  "items": [
+    {
+      "id": 101,
+      "userId": 42,
+      "rideId": 7,
+      "title": "Driver on the way",
+      "message": "Your driver has accepted the ride and is heading to your pickup point.",
+      "channel": "IN_APP",
+      "eventType": "RIDE_ACCEPTED",
+      "read": false,
+      "createdAt": "2024-01-15T10:12:00Z",
+      "deliveredAt": "2024-01-15T10:12:01Z",
+      "status": "DELIVERED"
+    }
+  ],
+  "unreadCount": 1
+}
+```
+
+### POST /notifications/mark-read/{notificationId}
+
+Marks a single notification as read.
+
+**Path parameter** — `notificationId`: the numeric ID of the notification.
+
+**Response**
+
+```json
+{
+  "message": "Notification marked as read."
+}
+```
+
+### POST /notifications/mark-all-read
+
+Marks all notifications for the authenticated user as read in a single call.
+
+**Response**
+
+```json
+{
+  "message": "All notifications marked as read."
+}
+```
+
+### POST /notifications/test
+
+Queues a test notification for the authenticated user. Useful for verifying WebSocket delivery end-to-end.
+
+**Response**
+
+```json
+{
+  "message": "Test notification queued."
+}
+```
+
+## Real-time delivery via STOMP
+
+Notifications are pushed to the connected client over STOMP immediately after they are persisted. The backend sends to the user-specific destination `/user/queue/notifications`.
+
+Each push payload follows one of two shapes:
+
+**NOTIFICATION_CREATED** — a new notification arrived:
+
+```json
+{
+  "type": "NOTIFICATION_CREATED",
+  "notification": { ...notification object... },
+  "unreadCount": 3
+}
+```
+
+**NOTIFICATION_SYNC** — full list refresh:
+
+```json
+{
+  "type": "NOTIFICATION_SYNC",
+  "items": [ ...notification objects... ],
+  "unreadCount": 3
+}
+```
+
+## Frontend: NotificationCenter component
+
+`NotificationCenter.jsx` provides the bell-icon notification panel in the top navigation bar.
+
+### Connection setup
+
+On mount (when a valid token is present), the component creates a `@stomp/stompjs` `Client` and subscribes to the user queue:
+
+```jsx
+// NotificationCenter.jsx
+const WS_BROKER_URL = `${WS_BASE.replace(/^http/i, "ws")}/ws`;
+
+client = new Client({
+  brokerURL: WS_BROKER_URL,
+  connectHeaders: { Authorization: `Bearer ${token}` },
+  reconnectDelay: 5000,
+  heartbeatIncoming: 10000,
+  heartbeatOutgoing: 10000,
+});
+
+client.onConnect = () => {
+  client.subscribe("/user/queue/notifications", (frame) => {
+    handleSocketPayload(JSON.parse(frame.body));
+  });
+};
+
+client.activate();
+```
+
+The client reconnects automatically after 5 seconds if the connection drops. Heartbeats are exchanged every 10 seconds in both directions.
+
+### Polling fallback
+
+If WebSocket is unavailable, the component polls `GET /notifications/history` every 45 seconds:
+
+```jsx
+// NotificationCenter.jsx
+useEffect(() => {
+  fetchNotifications();
+  const intervalId = setInterval(fetchNotifications, 45000);
+  return () => clearInterval(intervalId);
+}, [fetchNotifications]);
+```
+
+### Unread count badge
+
+The trigger button label updates to `Notifications (N)` when there are unread items. A brief scale animation (via Velocity.js) pulses the button when `unreadCount` increases:
+
+```jsx
+// NotificationCenter.jsx
+if (unreadCount > previousUnreadRef.current) {
+  Velocity(buttonNode, { scale: [1.08, 1] }, { duration: 180 });
+  Velocity(buttonNode, { scale: 1 },          { duration: 170 });
+}
+```
+
+### Panel behaviour
+
+- Clicking the button opens an animated dropdown listing all notifications.
+- Unread notifications are highlighted with a cyan border; read ones use slate styling.
+- **Read** button on each card calls `POST /notifications/mark-read/{id}`.
+- **Mark all read** button calls `POST /notifications/mark-all-read`.
+- **Send test** button calls `POST /notifications/test` to trigger a live WebSocket delivery for testing.
+- The panel closes on outside click or `Escape` key.
+
+<Tip>
+  Notifications are persisted in PostgreSQL, so they survive backend restarts. Users can scroll back through their full history at any time via `GET /notifications/history`, regardless of whether they were connected when the notification was first delivered.
+</Tip>

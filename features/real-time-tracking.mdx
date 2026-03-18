@@ -1,0 +1,182 @@
+---
+title: "Real-Time Tracking"
+---
+
+RideShare Live uses STOMP over WebSocket (with a SockJS fallback) to push live driver location updates and ride-event notifications to connected clients.
+
+## WebSocket architecture
+
+The backend is configured in `WebSocketConfig.java` using Spring's `@EnableWebSocketMessageBroker`:
+
+```java
+// WebSocketConfig.java
+@Override
+public void registerStompEndpoints(StompEndpointRegistry registry) {
+    registry.addEndpoint("/ws")
+            .setAllowedOriginPatterns("*");
+    registry.addEndpoint("/ws-sockjs")
+            .setAllowedOriginPatterns("*")
+            .withSockJS();
+}
+
+@Override
+public void configureMessageBroker(MessageBrokerRegistry registry) {
+    registry.enableSimpleBroker("/topic", "/queue");
+    registry.setApplicationDestinationPrefixes("/app");
+    registry.setUserDestinationPrefix("/user");
+}
+```
+
+| Endpoint | Protocol | Use |
+|---|---|---|
+| `/ws` | Native WebSocket + STOMP | Primary connection |
+| `/ws-sockjs` | SockJS (HTTP fallback) | Environments that block WebSocket |
+
+### Message broker topics
+
+| Destination | Direction | Description |
+|---|---|---|
+| `/topic/ride/{rideId}` | Server → all subscribers | Ride status updates broadcast to both rider and driver |
+| `/user/queue/notifications` | Server → specific user | Personal notification delivery |
+
+All inbound STOMP frames pass through `WebSocketAuthChannelInterceptor`, which validates the `Authorization: Bearer <token>` STOMP connect header before any subscription is accepted.
+
+## Driver location updates
+
+### POST /rides/location/{rideId}
+
+Drivers push their current GPS coordinates while a ride is in `ACCEPTED` or `PICKED` state.
+
+**Request body**
+
+```json
+{
+  "lat": 28.6139,
+  "lon": 77.2090
+}
+```
+
+**Response** — full updated `Ride` object with `driverLat`, `driverLon`, and `driverLocationUpdatedAt` populated.
+
+The service saves the coordinates to the `Ride` row and also upserts them in the `DriverLocationCacheService`:
+
+```java
+// RideService.java — submitDriverLocation
+ride.setDriverLat(lat);
+ride.setDriverLon(lon);
+ride.setDriverLocationUpdatedAt(Instant.now());
+Ride savedRide = rideRepository.save(ride);
+try {
+    driverLocationCacheService.upsertDriverLocation(user.getId(), lat, lon);
+} catch (Exception ignored) {
+    // Keep ride flow resilient even when Redis is temporarily unavailable.
+}
+```
+
+<Info>
+  `DriverLocationCacheService` stores driver coordinates in an in-memory `ConcurrentHashMap`, keyed by driver ID. Redis is optional; if unavailable the in-memory store is used transparently. The cache powers the nearby-drivers lookup without hitting the database on every poll.
+</Info>
+
+## Nearby drivers
+
+### GET /rides/drivers/nearby
+
+Returns drivers within a given radius of a coordinate.
+
+**Query parameters**
+
+| Param | Required | Default | Description |
+|---|---|---|---|
+| `lat` | Yes | — | Latitude of the search center |
+| `lon` | Yes | — | Longitude of the search center |
+| `radiusKm` | No | `5` | Search radius in kilometres |
+| `limit` | No | `10` | Maximum number of results |
+
+**Example request**
+
+```bash
+curl "http://localhost:8080/rides/drivers/nearby?lat=28.6139&lon=77.2090&radiusKm=3&limit=5"
+```
+
+**Response** — array of driver location records from the cache.
+
+## Frontend: LiveMapPanel component
+
+`LiveMapPanel.jsx` renders an OpenStreetMap iframe that tracks the user's location and supports manual search. It does **not** subscribe directly to WebSocket for map updates; instead `RideStatus.jsx` reads `driverLat` / `driverLon` from the polled ride object and injects them into a separate tracking iframe:
+
+```jsx
+// RideStatus.jsx — getTrackingMapSrc
+function getTrackingMapSrc(point) {
+  const boundedLat = clamp(Number(point.lat), INDIA_BOUNDS.minLat, INDIA_BOUNDS.maxLat);
+  const boundedLon = clamp(Number(point.lon), INDIA_BOUNDS.minLon, INDIA_BOUNDS.maxLon);
+  const deltaLon = 0.12;
+  const deltaLat = 0.08;
+  // ... bbox calculation ...
+  return `https://www.openstreetmap.org/export/embed.html?bbox=${minLon}%2C${minLat}%2C${maxLon}%2C${maxLat}&layer=mapnik&marker=${boundedLat}%2C${boundedLon}`;
+}
+```
+
+The driver tracking map is rendered in `RideStatus` for rides with status `ACCEPTED` or `PICKED` where valid India-bounded GPS coordinates exist:
+
+```jsx
+// RideStatus.jsx
+{showDriverTracking && trackingPoint.hasLiveGps && (
+  <iframe
+    title="Driver live tracking map"
+    src={getTrackingMapSrc(trackingPoint)}
+    loading="lazy"
+  />
+)}
+```
+
+`LiveMapPanel` itself geocodes search queries via **Nominatim** (primary) with a **Photon/Komoot** fallback, enforces India bounding box (`6°–38.5°N`, `68°–97.5°E`), and offers Map and Street View modes.
+
+## Frontend: STOMP subscription (NotificationCenter)
+
+The `NotificationCenter` component establishes the STOMP connection on mount and subscribes to the user-specific queue:
+
+```jsx
+// NotificationCenter.jsx
+const WS_BROKER_URL = `${WS_BASE.replace(/^http/i, "ws")}/ws`;
+
+client = new Client({
+  brokerURL: WS_BROKER_URL,
+  connectHeaders: {
+    Authorization: `Bearer ${token}`,
+  },
+  reconnectDelay: 5000,
+  heartbeatIncoming: 10000,
+  heartbeatOutgoing: 10000,
+});
+
+client.onConnect = () => {
+  client.subscribe("/user/queue/notifications", (frame) => {
+    handleSocketPayload(JSON.parse(frame.body));
+  });
+};
+```
+
+Incoming socket payloads are handled by type:
+
+| `type` field | Action |
+|---|---|
+| `NOTIFICATION_CREATED` | Prepends the new notification to the list; updates `unreadCount` |
+| `NOTIFICATION_SYNC` | Replaces the full notification list |
+
+If the WebSocket connection fails, the component falls back to polling `GET /notifications/history` every 45 seconds.
+
+## Ride status polling
+
+`RideStatus.jsx` polls the ride status endpoint every 8 seconds for active rides:
+
+```jsx
+// RideStatus.jsx
+useEffect(() => {
+  if (!ride?.id || !token) return;
+  fetchRideStatus();
+  const interval = setInterval(fetchRideStatus, 8000);
+  return () => clearInterval(interval);
+}, [fetchRideStatus, ride, token]);
+```
+
+This keeps the driver's GPS coordinates, OTPs, and status badge fresh without requiring a persistent WebSocket subscription from the rider side.

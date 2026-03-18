@@ -1,0 +1,273 @@
+---
+title: "Authentication API"
+description: "OTP-gated signup, JWT login, token refresh, and logout endpoints."
+---
+
+All auth endpoints are under `/api/v1/auth` and are publicly accessible (no token required).
+
+---
+
+## POST /auth/signup/request-otp
+
+Generates a 6-digit OTP and emails it to the provided address. Must be called before `/auth/signup`. The endpoint is rate-limited — repeated calls within the cooldown window return `429`.
+
+### Request body
+
+<ParamField body="name" type="string">
+  Display name of the user being registered.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Email address to send the OTP to.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="message" type="string">
+  Human-readable result message.
+</ResponseField>
+
+<ResponseField name="emailSent" type="boolean">
+  Whether the OTP email was dispatched successfully.
+</ResponseField>
+
+<ResponseField name="devOtp" type="string">
+  The raw OTP value. Only populated when `AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=true` (development). Empty string in production.
+</ResponseField>
+
+<ResponseField name="expiresAt" type="string">
+  ISO-8601 timestamp when the OTP expires. Empty string if unavailable.
+</ResponseField>
+
+### Response — 429 (rate limited)
+
+<ResponseField name="message" type="string">
+  Explanation of the rate limit.
+</ResponseField>
+
+<ResponseField name="retryAfterSeconds" type="number">
+  How many seconds to wait before retrying.
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/auth/signup/request-otp \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Alice", "email": "alice@example.com"}'
+```
+
+```json Response
+{
+  "message": "OTP sent to alice@example.com.",
+  "emailSent": true,
+  "devOtp": "482910",
+  "expiresAt": "2026-03-18T10:05:00Z"
+}
+```
+</CodeGroup>
+
+---
+
+## POST /auth/signup
+
+Creates or updates an account after OTP verification. The OTP must have been issued by `/auth/signup/request-otp` and not yet expired.
+
+### Request body
+
+<ParamField body="name" type="string" required>
+  Display name for the new account.
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Email address (must match the address used to request the OTP).
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Password for the new account. Stored as a bcrypt hash.
+</ParamField>
+
+<ParamField body="otp" type="string" required>
+  6-digit OTP received by email.
+</ParamField>
+
+<ParamField body="role" type="string">
+  Account role. Accepted values: `RIDER`, `DRIVER`. Defaults to `RIDER` if omitted.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="message" type="string">
+  `"Account created/updated successfully."`
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Alice",
+    "email": "alice@example.com",
+    "password": "SecurePass123!",
+    "otp": "482910",
+    "role": "RIDER"
+  }'
+```
+
+```json Response
+{
+  "message": "Account created/updated successfully."
+}
+```
+</CodeGroup>
+
+---
+
+## POST /auth/login
+
+Authenticates with email and password. Returns a short-lived JWT access token and a long-lived refresh token.
+
+### Request body
+
+<ParamField body="email" type="string" required>
+  Registered email address.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Account password.
+</ParamField>
+
+<ParamField body="role" type="string">
+  Override the default role for this session. Accepted values: `RIDER`, `DRIVER`. Falls back to the account's stored role if omitted or invalid.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="token" type="string">
+  JWT access token (same value as `accessToken`, provided for backwards compatibility).
+</ResponseField>
+
+<ResponseField name="accessToken" type="string">
+  JWT access token. Include in `Authorization: Bearer <accessToken>` on subsequent requests.
+</ResponseField>
+
+<ResponseField name="refreshToken" type="string">
+  Long-lived refresh token. Use with `/auth/refresh` to obtain a new access token.
+</ResponseField>
+
+<ResponseField name="tokenType" type="string">
+  Always `"Bearer"`.
+</ResponseField>
+
+<ResponseField name="expiresIn" type="number">
+  Access token lifetime in seconds.
+</ResponseField>
+
+<ResponseField name="id" type="number">
+  Numeric user ID.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Display name of the authenticated user.
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  Effective role for this session (`RIDER` or `DRIVER`).
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "password": "SecurePass123!"}'
+```
+
+```json Response
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
+  "refreshToken": "eyJhbGciOiJIUzI1NiJ9...",
+  "tokenType": "Bearer",
+  "expiresIn": 3600,
+  "id": 42,
+  "name": "Alice",
+  "role": "RIDER"
+}
+```
+</CodeGroup>
+
+---
+
+## POST /auth/refresh
+
+Rotates the refresh token and issues a new access token. The old refresh token is revoked after this call.
+
+### Request body
+
+<ParamField body="refreshToken" type="string" required>
+  A valid, non-expired, non-revoked refresh token.
+</ParamField>
+
+### Response — 200
+
+Returns the same shape as `/auth/login`.
+
+<ResponseField name="accessToken" type="string">
+  New JWT access token.
+</ResponseField>
+
+<ResponseField name="refreshToken" type="string">
+  New refresh token (the old one is now invalid).
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "eyJhbGciOiJIUzI1NiJ9..."}'
+```
+
+```json Response
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
+  "refreshToken": "eyJhbGciOiJIUzI1NiJ9...",
+  "tokenType": "Bearer",
+  "expiresIn": 3600,
+  "id": 42,
+  "name": "Alice",
+  "role": "RIDER"
+}
+```
+</CodeGroup>
+
+---
+
+## POST /auth/logout
+
+Revokes the supplied refresh token. The access token remains valid until it expires naturally — clients should discard it locally.
+
+### Request body
+
+<ParamField body="refreshToken" type="string">
+  The refresh token to revoke. The request body is optional; if omitted, the call still returns `200` and is a no-op.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="message" type="string">
+  `"Logged out."`
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "eyJhbGciOiJIUzI1NiJ9..."}'
+```
+
+```json Response
+{
+  "message": "Logged out."
+}
+```
+</CodeGroup>

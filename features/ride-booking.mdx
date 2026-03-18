@@ -1,0 +1,252 @@
+---
+title: "Ride Booking"
+---
+
+RideShare Live lets riders request a trip in seconds. The booking flow resolves fare estimates in real time, validates payment, and notifies both rider and driver at each stage.
+
+## Ride status lifecycle
+
+```
+REQUESTED → ACCEPTED → PICKED → COMPLETED
+                 ↘
+              CANCELLED
+```
+
+| Status | Who sets it | Description |
+|---|---|---|
+| `REQUESTED` | System on `POST /rides/book` | Ride created, waiting for a driver |
+| `ACCEPTED` | Driver via `POST /rides/status/{id}` | Driver accepted; start OTP generated |
+| `PICKED` | Driver after start OTP verification | Rider picked up; end OTP required to complete |
+| `COMPLETED` | Driver after end OTP verification | Ride finished |
+| `CANCELLED` | Rider or driver | Ride cancelled; cancellation fee may apply |
+
+## Endpoints
+
+### POST /rides/book
+
+Creates a new ride. Requires an authenticated rider token.
+
+**Request body**
+
+```json
+{
+  "pickupLocation": "Connaught Place, New Delhi",
+  "dropLocation": "Hawa Mahal, Jaipur",
+  "fare": 260,
+  "paymentMode": "CASH",
+  "paymentReference": "CASH"
+}
+```
+
+`paymentMode` must be one of `CASH`, `CARD`, `UPI`, or `WALLET`. For online modes a valid Stripe `paymentReference` (session ID) must be supplied and the session must be in a `paid` state before the ride is created.
+
+**Success response (200)** — full `Ride` object.
+
+### GET /rides/estimate
+
+Returns a fare estimate for a given distance and ride type. No authentication required.
+
+**Query parameters**
+
+| Param | Required | Description |
+|---|---|---|
+| `distanceKm` | Yes | Straight-line distance in km |
+| `rideType` | No | `ECONOMY`, `COMFORT`, `XL`, `PREMIUM`, `BIKE`, `MINI`, `SEDAN` (default `ECONOMY`) |
+
+**Response**
+
+```json
+{
+  "distanceKm": 27.5,
+  "rideType": "economy",
+  "estimatedFare": 160,
+  "fareMin": 140,
+  "fareMax": 195,
+  "etaMinMinutes": 62,
+  "etaMaxMinutes": 67,
+  "currency": "INR"
+}
+```
+
+**Fare formula** (from `RideService`):
+
+```
+fare = 60 (base)
+     + ⌊distanceKm / 40⌋ × 50   (slab charge)
+     + 50                          (platform surcharge)
+     + rideTypeSurcharge           (COMFORT +50, XL +150, PREMIUM +200, BIKE -20)
+```
+
+Economy rides are capped at 80 km; longer trips are automatically upgraded to COMFORT.
+
+### GET /rides/status/{rideId}
+
+Fetches the current state of a ride, including driver GPS coordinates when available.
+
+### POST /rides/status/{rideId}
+
+Updates the ride status. Used by drivers to progress a ride.
+
+**Request body**
+
+```json
+{
+  "status": "ACCEPTED",
+  "driverId": "7",
+  "otp": ""
+}
+```
+
+OTP is required only for `PICKED` (start OTP) and `COMPLETED` (end OTP) transitions. See [OTP verification](#otp-verification-for-ride-start-and-end).
+
+### GET /rides/history
+
+Returns all rides for the authenticated user (rider or driver).
+
+### POST /rides/cancel/{rideId}
+
+Cancels a ride. Either the rider or the assigned driver can cancel.
+
+**Request body** (optional)
+
+```json
+{
+  "reason": "Plan changed"
+}
+```
+
+**Cancellation fee rules** (from `RideService.calculateCancellationFee`):
+
+| Status at cancel | Cancelled by | Fee |
+|---|---|---|
+| `REQUESTED` | Rider | INR 0 |
+| `ACCEPTED` | Rider | 20% of fare (min INR 20, max INR 60) |
+| `PICKED` | Rider | 40% of fare (min INR 50, max INR 180) |
+| Any | Driver | INR 0 |
+
+### POST /rides/feedback/{rideId}
+
+Submits a rating and comment after a `COMPLETED` ride. Rating must be 1–5.
+
+**Request body**
+
+```json
+{
+  "rating": 5,
+  "comment": "Great driver, very smooth ride!"
+}
+```
+
+Drivers set `driverRating` / `driverFeedback`; riders set `riderRating` / `riderFeedback`.
+
+## Booking flow
+
+<Tabs>
+  <Tab title="Rider perspective">
+    <Steps>
+      <Step title="Enter pickup and destination">
+        The `RideBookingForm` component accepts typed city names or the browser's live GPS location ("Current Live Location"). Locations are geocoded via Nominatim.
+      </Step>
+      <Step title="Get fare estimate">
+        As soon as both fields are filled, the form calls `GET /rides/estimate` with the haversine distance between the two geocoded points. The estimated fare, ETA range, and distance are shown in real time (debounced 400 ms).
+      </Step>
+      <Step title="Choose ride type and payment">
+        Rider selects Economy, Comfort, XL, or Premium. Payment mode is Cash, Card, or UPI. For Card and UPI, dummy payment details are collected client-side and a local payment reference is generated before booking.
+      </Step>
+      <Step title="Confirm booking">
+        `POST /rides/book` is called with `pickupLocation`, `dropLocation`, `fare`, `paymentMode`, and `paymentReference`. The server sets `status = REQUESTED` and fires a notification.
+      </Step>
+      <Step title="Track status">
+        The `RideStatus` component polls `GET /rides/status/{id}` every 8 seconds. It displays the step progress bar and, once a driver accepts, shows the pickup OTP and complete OTP.
+      </Step>
+      <Step title="Ride completes or is cancelled">
+        On `COMPLETED` or `CANCELLED`, the progress bar stops, OTPs are cleared, and the `onComplete` callback triggers the feedback or payment flow.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Driver perspective">
+    <Steps>
+      <Step title="Browse requested rides">
+        Call `GET /rides/requested` to see all rides that are not yet `COMPLETED` or `CANCELLED`.
+      </Step>
+      <Step title="Accept a ride">
+        Call `POST /rides/status/{rideId}` with `status: ACCEPTED` and `driverId`. The server assigns the driver, sets `acceptedAt`, and generates a 4-digit start OTP and a 4-digit end OTP. Both are emailed to the rider.
+      </Step>
+      <Step title="Pick up the rider">
+        Ask the rider for their pickup OTP. Call `POST /rides/status/{rideId}` with `status: PICKED` and `otp: <startOtp>`. The server validates the OTP before advancing.
+      </Step>
+      <Step title="Complete the ride">
+        At the destination, ask the rider for the complete OTP. Call `POST /rides/status/{rideId}` with `status: COMPLETED` and `otp: <endOtp>`.
+      </Step>
+      <Step title="Submit feedback">
+        Call `POST /rides/feedback/{rideId}` with a rating of 1–5 and an optional comment.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## OTP verification for ride start and end
+
+When a driver accepts a ride the backend generates two random 4-digit OTPs:
+
+```java
+// RideService.java
+private static String generateOtp() {
+    int value = ThreadLocalRandom.current().nextInt(1000, 10000);
+    return String.valueOf(value);
+}
+```
+
+- **`startOtp`** — rider shows this to the driver to confirm pickup (`PICKED` transition).
+- **`endOtp`** — rider shows this at the destination to confirm the ride is complete (`COMPLETED` transition).
+
+Both OTPs are visible in the `RideStatus` component once the ride is `ACCEPTED` or `PICKED`:
+
+```jsx
+// RideStatus.jsx
+{(currentRide.status === "ACCEPTED" || currentRide.status === "PICKED") && (
+  <div className="mt-4 grid gap-3 rounded-2xl border border-cyan-200 bg-cyan-50 p-4 sm:grid-cols-2">
+    <div>
+      <p>Pickup OTP</p>
+      <p>{currentRide.startOtp || "----"}</p>
+    </div>
+    <div>
+      <p>Complete OTP</p>
+      <p>{currentRide.endOtp || "----"}</p>
+    </div>
+  </div>
+)}
+```
+
+## Ride entity fields
+
+<Accordion title="Full Ride entity reference">
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | Long | Auto-generated primary key |
+| `pickupLocation` | String | Human-readable pickup address |
+| `dropLocation` | String | Human-readable destination |
+| `fare` | Double | Agreed fare in INR |
+| `riderId` | Long | FK to User (rider) |
+| `driverId` | Long | FK to User (driver), set on accept |
+| `paymentMode` | String | `CASH`, `CARD`, `UPI`, or `WALLET` |
+| `paymentReference` | String | Stripe session ID or `CASH` |
+| `paymentStatus` | String | `PAID`, `PAY_AT_END`, or `PENDING` |
+| `startOtp` | String | 4-digit pickup OTP |
+| `endOtp` | String | 4-digit completion OTP |
+| `createdAt` | Instant | Booking timestamp |
+| `acceptedAt` | Instant | Driver acceptance timestamp |
+| `driverLat` | Double | Latest driver latitude |
+| `driverLon` | Double | Latest driver longitude |
+| `driverLocationUpdatedAt` | Instant | Timestamp of last location update |
+| `cancellationReason` | String (600) | Reason supplied at cancellation |
+| `cancelledBy` | String | `RIDER` or `DRIVER` |
+| `cancellationFee` | Double | Fee charged in INR |
+| `riderRating` | Integer | 1–5 rating from rider |
+| `riderFeedback` | String (600) | Comment from rider |
+| `driverRating` | Integer | 1–5 rating from driver |
+| `driverFeedback` | String (600) | Comment from driver |
+| `status` | Enum | `REQUESTED`, `ACCEPTED`, `PICKED`, `COMPLETED`, `CANCELLED` |
+
+</Accordion>

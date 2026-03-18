@@ -1,0 +1,296 @@
+---
+title: "Architecture"
+description: "Overview of the RideShare Live system design: Spring Boot backend layers, React SPA, STOMP WebSocket broker, and external service integrations."
+---
+
+RideShare Live is a monorepo with two independent applications:
+
+- **`ridesharelive-backend-main/`** — Spring Boot 3 REST API and WebSocket broker
+- **`ridesharelive-frontend-main/`** — React 19 single-page application
+
+Both apps run as separate processes. The frontend communicates with the backend over HTTP (REST) for CRUD operations and over STOMP WebSocket for real-time events.
+
+## System overview
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   Browser (React SPA)                │
+│  Rider Dashboard │ Driver Dashboard │ Landing Page   │
+│       REST (axios/fetch)    STOMP WebSocket          │
+└────────────────────┬────────────────┬────────────────┘
+                     │                │
+                     ▼                ▼
+┌─────────────────────────────────────────────────────┐
+│             Spring Boot 3 Backend (:8080)            │
+│  SecurityFilterChain → Controllers → Services → JPA  │
+│          STOMP Broker (/topic, /queue)               │
+└──────────┬──────────────┬──────────────┬────────────┘
+           │              │              │
+           ▼              ▼              ▼
+      PostgreSQL        Redis          Stripe / Gmail
+```
+
+<AccordionGroup>
+  <Accordion title="Backend architecture">
+    The backend follows a standard Spring MVC layered architecture:
+
+    **Entry point**
+
+    ```java
+    @SpringBootApplication
+    public class BackendApplication {
+        public static void main(String[] args) {
+            SpringApplication.run(BackendApplication.class, args);
+        }
+    }
+    ```
+
+    **Layer breakdown**
+
+    | Layer | Package | Responsibility |
+    |---|---|---|
+    | Controllers | `com.example.backend.controller` | Receive HTTP requests, validate input, delegate to services |
+    | Services | `com.example.backend.service` | Business logic — ride lifecycle, payment flow, OTP generation |
+    | Repositories | `com.example.backend.repository` | Spring Data JPA interfaces for database access |
+    | Models | `com.example.backend.model` | JPA entities mapped to PostgreSQL tables |
+    | Config | `com.example.backend.config` | Security, CORS, WebSocket configuration |
+    | Auth | `com.example.backend.auth` | JWT filter, JWT utility, auth controller |
+    | Security | `com.example.backend.security` | Security filter chain, channel interceptor |
+
+    **Controllers**
+    - `AuthController` — signup, login, OTP send/verify, token refresh
+    - `UserController` — profile management, user settings
+    - `RideController` — create, estimate, accept, reject, complete rides
+    - `DriverController` — driver availability, location updates
+    - `PaymentController` — Stripe checkout session, payment verification
+    - `LocationController` — driver location persistence and broadcast
+
+    **Services**
+    - `UserService` — user CRUD, role assignment
+    - `RideService` — ride state machine (REQUESTED → ACCEPTED → STARTED → COMPLETED)
+    - `DriverService` — driver availability toggling, nearby driver lookup
+    - `PaymentService` — Stripe session creation and verification
+    - `EmailService` — OTP and notification emails via Gmail SMTP
+    - `LocationService` — driver location updates cached in Redis
+    - `NotificationService` — in-app notifications persisted and broadcast over WebSocket
+  </Accordion>
+
+  <Accordion title="Security and JWT filter chain">
+    Spring Security is configured in `SecurityConfig.java` as a stateless filter chain:
+
+    ```java
+    http
+        .csrf(csrf -> csrf.disable())
+        .cors(Customizer.withDefaults())
+        .sessionManagement(session ->
+            session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(auth -> auth
+            .requestMatchers(
+                "/auth/**",
+                "/ws/**",
+                "/ws-sockjs/**",
+                "/rides/estimate",
+                "/rides/requested",
+                "/rides/status/**",
+                "/rides/drivers/nearby",
+                "/swagger-ui/**",
+                "/v3/api-docs/**"
+            ).permitAll()
+            .anyRequest().authenticated())
+        .addFilterBefore(jwtfilter, UsernamePasswordAuthenticationFilter.class);
+    ```
+
+    The `Jwtfilter` (a `OncePerRequestFilter`) extracts the `Authorization: Bearer <token>` header, validates the JWT signature using the configured `JWT_SECRET`, and populates the `SecurityContextHolder` with the authenticated principal.
+
+    CORS is configured to allow all origin patterns with `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` methods, and exposes the `Authorization` response header.
+
+    **Token lifetimes**
+    - Access token: 24 hours (`JWT_EXPIRATION=86400000` ms)
+    - Refresh token: 7 days (stored in the `refresh_tokens` table)
+    - OTP: 5 minutes validity
+  </Accordion>
+
+  <Accordion title="WebSocket and STOMP broker">
+    WebSocket is configured in `WebSocketConfig.java`:
+
+    ```java
+    @Override
+    public void registerStompEndpoints(StompEndpointRegistry registry) {
+        registry.addEndpoint("/ws")
+                .setAllowedOriginPatterns("*");
+        registry.addEndpoint("/ws-sockjs")
+                .setAllowedOriginPatterns("*")
+                .withSockJS();
+    }
+
+    @Override
+    public void configureMessageBroker(MessageBrokerRegistry registry) {
+        registry.enableSimpleBroker("/topic", "/queue");
+        registry.setApplicationDestinationPrefixes("/app");
+        registry.setUserDestinationPrefix("/user");
+    }
+
+    @Override
+    public void configureClientInboundChannel(ChannelRegistration registration) {
+        registration.interceptors(webSocketAuthChannelInterceptor);
+    }
+    ```
+
+    **Destination prefixes**
+    - `/app/**` — messages routed to `@MessageMapping` handler methods
+    - `/topic/**` — broadcast to all subscribers (e.g., ride status updates)
+    - `/queue/**` — point-to-point delivery
+    - `/user/**` — user-specific delivery via the user destination prefix
+
+    **Authentication on WebSocket**
+    The `WebSocketAuthChannelInterceptor` intercepts every inbound STOMP frame. On a `CONNECT` command it reads the `Authorization` header, validates the JWT, and sets the `StompHeaderAccessor` principal. Subsequent `SUBSCRIBE` and `SEND` frames inherit this principal.
+
+    **Frontend connection** (via `@stomp/stompjs` 7.3):
+    ```javascript
+    const client = new Client({
+      brokerURL: 'ws://localhost:8080/ws',
+      connectHeaders: { Authorization: `Bearer ${token}` },
+      onConnect: () => {
+        client.subscribe('/topic/rides', (message) => {
+          const rideUpdate = JSON.parse(message.body);
+          // update UI
+        });
+      },
+    });
+    client.activate();
+    ```
+  </Accordion>
+
+  <Accordion title="Frontend architecture">
+    The frontend is a React 19 single-page application built with Vite 7. It renders three primary views based on the authenticated user's role:
+
+    | Role | Component | Route condition |
+    |---|---|---|
+    | Unauthenticated | `HomeLanding` + `Login` / `Signup` | No token in `localStorage` |
+    | `RIDER` | `RiderDashboard` | `session.role === 'RIDER'` |
+    | `DRIVER` | `DriverDashboard` | `session.role === 'DRIVER'` |
+
+    **Session management**
+    Session state (`token`, `name`, `role`, `userId`) is stored in `localStorage` and read into React state on mount. Logout clears `localStorage` and resets session state to the initial unauthenticated value.
+
+    **Key components**
+    - `App.jsx` — root component, session state, theme/language preferences, routing logic
+    - `Login.jsx` / `Signup.jsx` — auth forms, POST to `/auth/login` and `/auth/register`
+    - `RiderDashboard` — ride booking, fare estimation, active ride tracking
+    - `DriverDashboard` — incoming ride requests, accept/reject, ride milestones
+    - `LiveMapPanel` — browser Geolocation + tile-based map, location search
+    - `NotificationCenter` — real-time notifications via WebSocket subscription
+    - `ThreeBackdrop` — Three.js 3D animated background on the landing page
+
+    **Build configuration** (`vite.config.js`)
+
+    ```javascript
+    export default defineConfig({
+      plugins: [react()],
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              if (id.includes('react') || id.includes('motion')) return 'react-vendor';
+              if (id.includes('three')) return 'three-vendor';
+              if (id.includes('@stomp/stompjs') ||
+                  id.includes('locomotive-scroll') ||
+                  id.includes('vanilla-tilt') ||
+                  id.includes('velocity-animate')) return 'ui-vendor';
+            },
+          },
+        },
+      },
+    });
+    ```
+
+    Production builds are split into four chunks — `react-vendor`, `three-vendor`, `ui-vendor`, and `vendor` — to maximize cache reuse.
+  </Accordion>
+
+  <Accordion title="Data flow: ride booking">
+    The following sequence describes what happens when a rider books a trip.
+
+    1. **Rider submits booking** — `RiderDashboard` sends `POST /rides/create` with pickup/dropoff coordinates and ride type. The request carries `Authorization: Bearer <token>`.
+    2. **JWT filter validates token** — `Jwtfilter` checks the signature and expiry, populates `SecurityContextHolder`.
+    3. **`RideController` receives request** — delegates to `RideService`.
+    4. **`RideService` persists the ride** — creates a `Ride` entity with status `REQUESTED`, saves via `RideRepository` (PostgreSQL).
+    5. **WebSocket broadcast** — `RideService` uses `SimpMessagingTemplate` to broadcast the new ride to `/topic/rides/requested`, where available drivers are subscribed.
+    6. **Driver receives request** — `DriverDashboard` shows the incoming ride. The driver clicks **Accept**, which sends `POST /rides/{id}/accept`.
+    7. **Ride status updated** — `RideService` transitions the ride to `ACCEPTED`, persists the update, and broadcasts to `/topic/rides/{id}/status`.
+    8. **Rider notified** — `RiderDashboard` receives the status update via WebSocket and shows the assigned driver.
+    9. **Location streaming** — while the ride is active, the driver's frontend periodically sends location updates via `POST /location/update`, which `LocationService` caches in Redis and broadcasts to the rider.
+    10. **Ride completion** — driver sends `POST /rides/{id}/complete`. `RideService` transitions status to `COMPLETED`. `PaymentService` initiates a Stripe Checkout session if payment is due.
+  </Accordion>
+
+  <Accordion title="Authentication flow">
+    New user registration and first login follow this sequence:
+
+    1. **Signup** — `POST /auth/register` with email, password, full name, and role (`USER` or `DRIVER`).
+    2. **OTP sent** — `EmailService` generates a 6-digit OTP, caches it with a 5-minute TTL, and sends it via Gmail SMTP.
+    3. **OTP verify** — `POST /email/verify-otp?email=...&otp=...` marks the account as verified.
+    4. **Login** — `POST /auth/login` with email and password. Spring Security's `AuthenticationManager` verifies the BCrypt hash.
+    5. **Tokens issued** — `JwtUtil` generates an access token (24h) and a refresh token (7d). The refresh token is persisted to the `refresh_tokens` table. Both tokens are returned in the response body.
+    6. **Frontend stores tokens** — `token` and `refreshToken` are written to `localStorage`. Subsequent API requests include `Authorization: Bearer <access_token>`.
+    7. **Token refresh** — when the access token expires, the frontend calls `POST /auth/refresh` with the refresh token to obtain a new access token without re-authentication.
+  </Accordion>
+
+  <Accordion title="Database entities">
+    The following JPA entities are persisted to PostgreSQL:
+
+    | Entity | Table | Key columns |
+    |---|---|---|
+    | `User` | `users` | `id`, `email`, `password`, `role`, `is_verified`, `rating` |
+    | `Ride` | `rides` | `id`, `user_id`, `driver_id`, `status`, `pickup_*`, `dropoff_*`, `ride_type`, `estimated_price` |
+    | `Payment` | `payments` | `id`, `ride_id`, `user_id`, `amount`, `stripe_transaction_id`, `status` |
+    | `RefreshToken` | `refresh_tokens` | `id`, `user_id`, `token`, `expiry_date` |
+    | `Notification` | `notifications` | `id`, `user_id`, `message`, `type`, `read`, `created_at` |
+    | `UserSettings` | `user_settings` | `id`, `user_id`, `settings JSON` |
+    | `Location` | `locations` | `id`, `driver_id`, `latitude`, `longitude`, `updated_at` |
+
+    Hibernate Spatial (`hibernate-spatial`) is included as a dependency to support geometric types if needed for advanced geospatial queries.
+
+    Recommended indexes for production:
+
+    ```sql
+    CREATE INDEX idx_user_email    ON users(email);
+    CREATE INDEX idx_ride_user     ON rides(user_id);
+    CREATE INDEX idx_ride_driver   ON rides(driver_id);
+    CREATE INDEX idx_ride_status   ON rides(status);
+    CREATE INDEX idx_location_driver ON locations(driver_id);
+    ```
+  </Accordion>
+
+  <Accordion title="External integrations">
+    **Stripe**
+
+    The `stripe-java` SDK (v26.12.0) is used directly. `PaymentService` creates a `Session` with line items derived from the ride's `estimated_price`, then returns the session URL to the frontend for redirect. On return, the frontend calls the backend to verify the session status before marking the ride paid.
+
+    **Gmail SMTP**
+
+    Spring Mail (`spring-boot-starter-mail`) sends all transactional emails:
+    - 6-digit OTP on signup
+    - Welcome email on first verified login
+    - Ride confirmation and completion receipts
+    - Payment confirmation
+
+    SMTP settings in `application.properties`:
+
+    ```properties
+    spring.mail.host=smtp.gmail.com
+    spring.mail.port=587
+    spring.mail.properties.mail.smtp.auth=true
+    spring.mail.properties.mail.smtp.starttls.enable=true
+    ```
+
+    **Redis**
+
+    Redis is used as the Spring Cache provider (`spring.cache.type=redis`). Primary use cases:
+    - OTP storage with TTL (5 minutes)
+    - Driver location cache — latest coordinates keyed by driver ID
+    - Session metadata caching to reduce database reads
+
+    **springdoc-openapi**
+
+    The `springdoc-openapi-starter-webmvc-ui` dependency (v2.8.5) auto-generates an OpenAPI 3 specification from controller annotations and serves the Swagger UI at `http://localhost:8080/swagger-ui.html`. The raw spec is available at `http://localhost:8080/v3/api-docs`.
+  </Accordion>
+</AccordionGroup>

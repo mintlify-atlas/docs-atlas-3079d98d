@@ -1,0 +1,135 @@
+---
+title: "Rider"
+---
+
+A **Rider** is a user who books and takes rides through RideShare Live. Riders interact with the platform to request trips, track their driver in real time, pay for the journey, and submit post-trip feedback.
+
+## What a Rider can do
+
+<CardGroup cols={2}>
+  <Card title="Book a ride" icon="car">
+    Enter a pickup location and destination, choose a ride type and payment mode, and confirm the booking.
+  </Card>
+  <Card title="Track in real time" icon="map-pin">
+    Watch the driver's live GPS position on an embedded OpenStreetMap iframe while the trip is in progress.
+  </Card>
+  <Card title="View ride status" icon="chart-bar">
+    Monitor the four-stage trip progress: Requested → Accepted → Picked up → Completed.
+  </Card>
+  <Card title="Ride history" icon="clock">
+    Browse all past trips with pickup, drop, fare, status, and payment details in a sortable table.
+  </Card>
+  <Card title="Submit feedback" icon="star">
+    Rate completed rides 1–5 and leave a written comment via the `RideFeedbackPanel` component.
+  </Card>
+  <Card title="Safety center" icon="shield">
+    Store a trusted contact, copy a live trip summary to the clipboard, and trigger an emergency call to 112.
+  </Card>
+</CardGroup>
+
+## Rider dashboard
+
+The `RiderDashboard.jsx` component is the main view for a signed-in rider. It is organised into several sections, all reachable from a sticky quick-action bar at the top:
+
+| Section | Description |
+|---|---|
+| **Stats bar** | Shows total completed rides, active rides, and cumulative spend in INR. |
+| **Pickup insight** | Displays the best nearby available driver with ETA range, distance, and a confidence level (High / Medium / Low). |
+| **Saved places & quick rebook** | Stores a Home and Work address in `localStorage`. One-tap buttons load either route directly into the booking form. The three most recent completed routes are shown as rebook shortcuts. |
+| **Safety center** | Trusted contact field (phone or email), a "Copy trip summary" button that writes the active trip details to the clipboard, and an Emergency SOS button that dials 112. |
+| **Live map** | A `LiveMapPanel` centered on Multai, India (lat 21.774, lon 78.257) at zoom level 6. |
+| **Nearby drivers** | A grid of up to 5 driver cards showing name, vehicle, plate, rating, ETA, and distance. A rider can select a preferred driver before booking. |
+| **Booking / current ride** | When no active ride exists, shows `RideBookingForm`. When a ride is active, shows `RideStatus` with the live tracker and OTP codes. |
+| **Feedback panel** | `RideFeedbackPanel` surfaces all completed rides that have not yet been rated. |
+| **Ride history** | `RideHistory` table sorted newest-first, showing status badges and payment mode pills. |
+
+### RideBookingForm
+
+The `RideBookingForm` component handles the entire booking flow:
+
+- **Pickup field** — free-text with Indian city autocomplete (`datalist`). A "Live" button fetches the browser's GPS coordinates and stores them in `localStorage` under `liveLocation`.
+- **Destination field** — same autocomplete list.
+- **Fare estimation** — debounced (400 ms). Uses the Nominatim OpenStreetMap geocoder to resolve coordinates, then calls `GET /rides/estimate?distanceKm=&rideType=` for a server-side fare. Falls back to the local formula: `INR 60 base + INR 50 per 40 km slab + INR 50 platform surcharge + ride type surcharge`.
+- **Ride types** — Economy (no surcharge), Comfort (+INR 100), XL (+INR 200), Premium (+INR 250). Economy is hidden automatically for distances over 80 km.
+- **Payment modes** — Cash, Card (dummy 16-digit number), UPI (validated against `name@bank` pattern).
+- **Recent routes** — up to 6 routes persisted in `localStorage` under `recentLocations`, shown as quick-select chips.
+
+### RideStatus
+
+Shown only when an active ride exists. Polls `GET /rides/status/{rideId}` every 8 seconds. Displays:
+
+- A gradient progress bar that fills over 120 seconds from booking.
+- Pickup OTP (`startOtp`) and complete OTP (`endOtp`) in a highlighted panel.
+- A live OpenStreetMap iframe centred on the driver's GPS coordinates (`driverLat` / `driverLon`) once the driver starts sharing location.
+- A cancel panel with reason dropdown (Plan changed, Driver taking too long, Booked by mistake, Pickup issue). Cancellation fees: REQUESTED = INR 0, ACCEPTED = 20 % of fare, PICKED = 40 % of fare.
+
+## Signing up as a rider
+
+Send a `POST /auth/signup` request with `role` set to `"RIDER"`:
+
+```json
+POST /auth/signup
+Content-Type: application/json
+
+{
+  "name": "Priya Sharma",
+  "email": "priya@example.com",
+  "password": "SecurePass123!",
+  "role": "RIDER"
+}
+```
+
+A successful response returns a JWT access token and refresh token. Store the access token and include it as `Authorization: Bearer <token>` on all subsequent requests.
+
+## Rider API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/auth/signup` | Register a new rider account |
+| `POST` | `/auth/login` | Authenticate and receive JWT |
+| `POST` | `/rides/book` | Book a new ride |
+| `GET` | `/rides/history` | Fetch all rides for the authenticated rider |
+| `GET` | `/rides/status/{rideId}` | Poll current ride state |
+| `POST` | `/rides/cancel/{rideId}` | Cancel an active ride (with reason) |
+| `POST` | `/rides/feedback/{rideId}` | Submit a rating and comment |
+| `GET` | `/rides/estimate` | Get fare + ETA estimate (`?distanceKm=&rideType=`) |
+| `GET` | `/user-settings` | Retrieve account settings |
+| `PUT` | `/user-settings` | Update account settings |
+
+### Example ride booking request
+
+```bash
+curl -X POST http://localhost:8080/rides/book \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pickupLocation": "Multai Bus Stand, MP",
+    "dropLocation": "Betul City Center, MP",
+    "fare": 160,
+    "paymentMode": "UPI",
+    "preferredDriverId": null,
+    "preferredDriverName": "",
+    "paymentReference": "DUMMY-UPI-priya@sbi",
+    "paymentStatus": "PAID"
+  }'
+```
+
+## Typical rider journey
+
+<Steps>
+  <Step title="Create an account">
+    Call `POST /auth/signup` with `role: "RIDER"`. An OTP is sent to the registered email for verification (configurable via `AUTH_SIGNUP_OTP_ENABLED`).
+  </Step>
+  <Step title="Book a ride">
+    Open the Rider Dashboard. Enter a pickup location (or click **Live** to use GPS) and a destination. Choose a ride type and payment mode. The fare is estimated automatically. Click **Confirm ride** to call `POST /rides/book`.
+  </Step>
+  <Step title="Track your driver">
+    Once a driver accepts, the `RideStatus` panel shows the driver's live GPS on an OpenStreetMap embed. The pickup OTP (`startOtp`) is displayed — share it with the driver when they arrive.
+  </Step>
+  <Step title="Complete the trip">
+    After reaching the destination, provide the complete OTP (`endOtp`) to the driver. The ride moves to `COMPLETED` status and the progress bar fills to 100 %.
+  </Step>
+  <Step title="Leave feedback">
+    The `RideFeedbackPanel` appears for any completed ride without a rating. Select 1–5 stars and optionally write a comment, then click **Submit feedback** to call `POST /rides/feedback/{rideId}`.
+  </Step>
+</Steps>

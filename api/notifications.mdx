@@ -1,0 +1,187 @@
+---
+title: "Notifications API"
+description: "Fetch in-app notifications and mark them as read."
+---
+
+All notification endpoints are under `/api/v1/notifications` and require a valid Bearer token.
+
+## Notification Object
+
+<ResponseField name="id" type="number">
+  Unique notification ID.
+</ResponseField>
+
+<ResponseField name="userId" type="number">
+  ID of the user this notification belongs to.
+</ResponseField>
+
+<ResponseField name="rideId" type="number">
+  ID of the associated ride, if applicable.
+</ResponseField>
+
+<ResponseField name="title" type="string">
+  Short notification title (up to 120 characters).
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Full notification body (up to 800 characters).
+</ResponseField>
+
+<ResponseField name="channel" type="string">
+  Delivery channel (up to 20 characters), e.g. `"IN_APP"`, `"EMAIL"`.
+</ResponseField>
+
+<ResponseField name="eventType" type="string">
+  Event that triggered the notification (up to 40 characters), e.g. `"RIDE_ACCEPTED"`, `"RIDE_COMPLETED"`.
+</ResponseField>
+
+<ResponseField name="read" type="boolean">
+  Whether the notification has been marked as read. Defaults to `false`.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  ISO-8601 timestamp when the notification was created.
+</ResponseField>
+
+<ResponseField name="deliveredAt" type="string">
+  ISO-8601 timestamp when the notification was delivered. May be `null`.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Delivery status (up to 20 characters), e.g. `"DELIVERED"`, `"PENDING"`.
+</ResponseField>
+
+---
+
+## GET /notifications/history
+
+Returns all in-app notifications for the authenticated user, along with summary counts.
+
+**Requires auth.**
+
+### Response — 200
+
+Returns the payload produced by `NotificationService.getInAppNotificationPayload`.
+
+<ResponseField name="notifications" type="Notification[]">
+  Array of notification objects.
+</ResponseField>
+
+<ResponseField name="unreadCount" type="number">
+  Total number of unread notifications.
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl http://localhost:8080/api/v1/notifications/history \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+{
+  "notifications": [
+    {
+      "id": 5,
+      "userId": 42,
+      "rideId": 101,
+      "title": "Ride Accepted",
+      "message": "Your driver is on the way.",
+      "channel": "IN_APP",
+      "eventType": "RIDE_ACCEPTED",
+      "read": false,
+      "createdAt": "2026-03-18T10:02:00Z",
+      "deliveredAt": "2026-03-18T10:02:01Z",
+      "status": "DELIVERED"
+    }
+  ],
+  "unreadCount": 1
+}
+```
+</CodeGroup>
+
+---
+
+## POST /notifications/mark-read/{notificationId}
+
+Marks a single notification as read for the authenticated user.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="notificationId" type="number" required>
+  ID of the notification to mark as read.
+</ParamField>
+
+### Response — 200
+
+<ResponseField name="message" type="string">
+  `"Notification marked as read."`
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/notifications/mark-read/5 \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+{
+  "message": "Notification marked as read."
+}
+```
+</CodeGroup>
+
+---
+
+## POST /notifications/mark-all-read
+
+Marks all notifications for the authenticated user as read in one call.
+
+**Requires auth.**
+
+### Response — 200
+
+<ResponseField name="message" type="string">
+  `"All notifications marked as read."`
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/notifications/mark-all-read \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+{
+  "message": "All notifications marked as read."
+}
+```
+</CodeGroup>
+
+---
+
+## POST /notifications/test
+
+Queues a test in-app notification for the authenticated user. Useful for verifying WebSocket delivery during development.
+
+**Requires auth.**
+
+### Response — 200
+
+<ResponseField name="message" type="string">
+  `"Test notification queued."`
+</ResponseField>
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/notifications/test \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+{
+  "message": "Test notification queued."
+}
+```
+</CodeGroup>

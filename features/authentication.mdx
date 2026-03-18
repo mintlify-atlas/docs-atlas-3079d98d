@@ -1,0 +1,251 @@
+---
+title: "Authentication"
+---
+
+RideShare Live uses a two-step email OTP flow to verify new accounts, followed by JWT-based sessions with short-lived access tokens and rotating refresh tokens.
+
+## Auth flow overview
+
+<Steps>
+  <Step title="Request OTP">
+    Send the user's name and email to `POST /auth/signup/request-otp`. A 6-digit OTP is generated and emailed. The OTP is valid for 5 minutes (configurable via `app.auth.signup-otp.ttl-seconds`).
+  </Step>
+  <Step title="Verify OTP and create account">
+    Submit name, email, password, role, and the OTP to `POST /auth/signup`. The OTP is verified before the account is created or updated.
+  </Step>
+  <Step title="Login">
+    Call `POST /auth/login` with email, password, and an optional role. The server returns an access token, a refresh token, and the resolved role.
+  </Step>
+  <Step title="Use access token">
+    Include the access token in every subsequent request as `Authorization: Bearer <token>`.
+  </Step>
+  <Step title="Refresh">
+    When the access token expires, call `POST /auth/refresh` with the refresh token to receive a new access token and a rotated refresh token.
+  </Step>
+  <Step title="Logout">
+    Call `POST /auth/logout` with the refresh token to revoke it server-side.
+  </Step>
+</Steps>
+
+## Endpoints
+
+### POST /auth/signup/request-otp
+
+Generates and emails a 6-digit OTP for signup.
+
+**Request body**
+
+```json
+{
+  "name": "Priya Sharma",
+  "email": "priya@example.com"
+}
+```
+
+**Success response (200)**
+
+```json
+{
+  "message": "OTP sent to your email address.",
+  "emailSent": true,
+  "devOtp": "",
+  "expiresAt": "2024-01-15T10:05:00Z"
+}
+```
+
+<Note>
+  OTP requests are rate-limited. Sending another request before `resendDelaySeconds` (default 30 s) elapses returns HTTP **429** with `retryAfterSeconds` in the response body. Wait the indicated duration before retrying.
+</Note>
+
+### POST /auth/signup
+
+Verifies the OTP and creates or updates the account.
+
+**Request body**
+
+```json
+{
+  "name": "Priya Sharma",
+  "email": "priya@example.com",
+  "password": "securePass123",
+  "role": "RIDER",
+  "otp": "482910"
+}
+```
+
+**Success response (200)**
+
+```json
+{
+  "message": "Account created/updated successfully."
+}
+```
+
+### POST /auth/login
+
+Authenticates with email and password; returns JWT access and refresh tokens.
+
+**Request body**
+
+```json
+{
+  "email": "priya@example.com",
+  "password": "securePass123",
+  "role": "RIDER"
+}
+```
+
+The `role` field is optional. When provided it must be `RIDER` or `DRIVER`; any other value falls back to the role stored on the account.
+
+**Success response (200)**
+
+```json
+{
+  "token": "eyJ...",
+  "accessToken": "eyJ...",
+  "refreshToken": "eyJ...",
+  "tokenType": "Bearer",
+  "expiresIn": 900,
+  "name": "Priya Sharma",
+  "role": "RIDER",
+  "id": 42
+}
+```
+
+### POST /auth/refresh
+
+Rotates the refresh token and issues a new access token.
+
+**Request body**
+
+```json
+{
+  "refreshToken": "eyJ..."
+}
+```
+
+**Success response (200)** — same shape as the login response with a new `accessToken` and `refreshToken`.
+
+### POST /auth/logout
+
+Revokes the supplied refresh token. The request body is optional; if omitted the endpoint still returns 200.
+
+```json
+{
+  "refreshToken": "eyJ..."
+}
+```
+
+## JWT structure
+
+Both token types are signed HMAC-SHA256 JWTs using the secret configured in `app.jwt.secret`. The payload claims are:
+
+| Claim | Type | Description |
+|---|---|---|
+| `sub` | string | User email (subject) |
+| `userId` | number | Database user ID |
+| `role` | string | `RIDER` or `DRIVER` |
+| `tokenType` | string | `access` or `refresh` |
+| `jti` | string | Random UUID per token |
+| `iat` | number | Issued-at (Unix seconds) |
+| `exp` | number | Expiry (Unix seconds) |
+
+```java
+// JwtUtil.java — buildAuthClaims
+public Map<String, Object> buildAuthClaims(Long userId, String role) {
+    Map<String, Object> claims = new LinkedHashMap<>();
+    claims.put("role", role);
+    claims.put("userId", userId);
+    return claims;
+}
+```
+
+## Access token vs refresh token
+
+| | Access token | Refresh token |
+|---|---|---|
+| Default expiry | 900 s (15 min) | 604 800 s (7 days) |
+| Config key | `app.jwt.access-expiration-ms` | `app.jwt.refresh-expiration-ms` |
+| `tokenType` claim | `access` | `refresh` |
+| Sent with | Every API request | Only `/auth/refresh` and `/auth/logout` |
+
+Both token types share the same signing secret. The `tokenType` claim is validated on every decode so an access token cannot be used as a refresh token and vice versa.
+
+## Role-based access
+
+RideShare Live has two roles:
+
+<CardGroup cols={2}>
+  <Card title="RIDER" icon="user">
+    Books rides, views ride history, submits feedback, and triggers payments.
+  </Card>
+  <Card title="DRIVER" icon="car">
+    Accepts rides, updates ride status, sends live location updates.
+  </Card>
+</CardGroup>
+
+The role is stored on the `User` entity (`role` column, max 20 chars) and is embedded in the JWT at login. Passing a `role` field at login time lets a user with both roles choose which session context to open:
+
+```java
+// AuthController.java — resolveLoginRole
+private String resolveLoginRole(String requestedRole, String defaultRole) {
+    if (requestedRole == null || requestedRole.isBlank()) {
+        return defaultRole;
+    }
+    String normalized = requestedRole.trim().toUpperCase(Locale.ROOT);
+    if ("RIDER".equals(normalized) || "DRIVER".equals(normalized)) {
+        return normalized;
+    }
+    return defaultRole;
+}
+```
+
+## Example curl commands
+
+<CodeGroup>
+
+```bash Request OTP
+curl -X POST http://localhost:8080/auth/signup/request-otp \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Priya Sharma", "email": "priya@example.com"}'
+```
+
+```bash Sign up
+curl -X POST http://localhost:8080/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Priya Sharma",
+    "email": "priya@example.com",
+    "password": "securePass123",
+    "role": "RIDER",
+    "otp": "482910"
+  }'
+```
+
+```bash Login
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "priya@example.com",
+    "password": "securePass123",
+    "role": "RIDER"
+  }'
+```
+
+```bash Refresh token
+curl -X POST http://localhost:8080/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "<refresh-token>"}'
+```
+
+```bash Logout
+curl -X POST http://localhost:8080/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken": "<refresh-token>"}'
+```
+
+</CodeGroup>
+
+<Warning>
+  Store refresh tokens securely. In the frontend they are kept in `localStorage` (key `refreshToken`). In production, prefer `HttpOnly` cookies or a secure credential store to reduce XSS exposure.
+</Warning>

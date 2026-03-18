@@ -1,0 +1,149 @@
+---
+title: "Payments"
+---
+
+RideShare Live integrates with Stripe Checkout for online payments. When `STRIPE_API_KEY` is not configured, the service automatically falls back to a local mock session so development and testing can proceed without a Stripe account.
+
+## Supported payment modes
+
+| Mode | Handling |
+|---|---|
+| `CASH` | Payment collected by driver at end of ride; `paymentStatus` set to `PAY_AT_END` |
+| `CARD` | Stripe Checkout session (normalized to `CARD` internally) |
+| `UPI` | Normalized to `UPI` internally; routed through Stripe Checkout |
+| `WALLET` | Normalized to `UPI` internally; routed through Stripe Checkout |
+
+The `normalizePaymentMode` method in `PaymentService` collapses `WALLET` and `UPI` to `UPI`, and treats anything else as `CARD`:
+
+```java
+// PaymentService.java
+private static String normalizePaymentMode(String paymentMode) {
+    if (paymentMode == null || paymentMode.isBlank()) {
+        return "CARD";
+    }
+    String normalized = paymentMode.trim().toUpperCase(Locale.ROOT);
+    if ("UPI".equals(normalized) || "WALLET".equals(normalized)) {
+        return "UPI";
+    }
+    return "CARD";
+}
+```
+
+## Stripe Checkout flow
+
+<Steps>
+  <Step title="Create a checkout session">
+    The frontend calls `POST /payments/checkout-session` after the rider confirms the fare. The backend creates a Stripe Checkout session set to `PAYMENT` mode with the fare converted to paise (INR minor units).
+  </Step>
+  <Step title="Redirect to Stripe">
+    The response contains `sessionUrl`. The frontend redirects the user to that URL to complete payment on Stripe's hosted page.
+  </Step>
+  <Step title="Return and verify">
+    Stripe redirects back to the configured `successUrl` with `?payment=success&session_id={CHECKOUT_SESSION_ID}`. The frontend then calls `GET /payments/verify-session/{sessionId}` to confirm the `paid` status before proceeding.
+  </Step>
+  <Step title="Book the ride">
+    The verified `sessionId` is passed as `paymentReference` when calling `POST /rides/book`. The backend re-verifies the session before saving the ride, setting `paymentStatus` to `PAID`.
+  </Step>
+</Steps>
+
+## Endpoints
+
+### POST /payments/checkout-session
+
+Creates a Stripe Checkout session (or a local mock session if Stripe is not configured).
+
+**Request body**
+
+```json
+{
+  "amountInInr": 260,
+  "rideSummary": "Connaught Place to Hawa Mahal",
+  "paymentMode": "CARD"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `amountInInr` | Integer | Yes | Fare amount in Indian Rupees (must be > 0) |
+| `rideSummary` | String | No | Human-readable trip description shown on Stripe's checkout page |
+| `paymentMode` | String | No | `CARD`, `UPI`, or `WALLET` (default `CARD`) |
+
+**Success response (200)**
+
+```json
+{
+  "sessionId": "cs_test_a1b2c3...",
+  "sessionUrl": "https://checkout.stripe.com/pay/cs_test_a1b2c3...",
+  "qrCodeBase64": "iVBORw0KGgo...",
+  "paymentStatus": "unpaid",
+  "paymentMode": "CARD",
+  "isMock": false
+}
+```
+
+When running without a valid `STRIPE_API_KEY` the response is identical in shape but `isMock` is `true`, `sessionId` starts with `local_session_`, and `paymentStatus` is `paid`.
+
+**Error responses**
+
+| Status | Cause |
+|---|---|
+| 400 | `amountInInr` is missing or ≤ 0 |
+| 503 | Stripe is not configured (production guard) |
+| 502 | Stripe API returned an error |
+
+### GET /payments/verify-session/{sessionId}
+
+Verifies the payment status of a session.
+
+**Path parameter** — `sessionId`: the value returned by `POST /payments/checkout-session`.
+
+**Success response (200)**
+
+```json
+{
+  "sessionId": "cs_test_a1b2c3...",
+  "paid": true,
+  "paymentStatus": "paid",
+  "amountTotalMinor": 26000,
+  "currency": "inr"
+}
+```
+
+`amountTotalMinor` is in paise (1 INR = 100 paise), so `26000` represents INR 260.
+
+Local mock sessions are stored in a `ConcurrentHashMap` in `PaymentService` for the lifetime of the process. Any `local_session_*` ID not found in the map is treated as `paid` (dev-friendly fallback).
+
+## Frontend payment flow
+
+The `RideBookingForm` component handles online payment inline rather than redirecting to Stripe. For the demo it generates a dummy payment reference client-side:
+
+```jsx
+// RideBookingForm.jsx
+const paymentReference =
+  paymentMode === "CARD"
+    ? `DUMMY-CARD-${normalizedCardNumber.slice(-4)}`
+    : paymentMode === "UPI"
+      ? `DUMMY-UPI-${normalizedUpi}`
+      : "Cash";
+```
+
+For a production integration, replace the dummy reference with the `sessionId` returned by `POST /payments/checkout-session`, redirect to `sessionUrl`, and capture the verified session ID on return before calling `POST /rides/book`.
+
+## QR code
+
+Every checkout session response includes `qrCodeBase64` — a 320×320 PNG QR code of the `sessionUrl` encoded as a Base64 string. This lets drivers display a scannable payment link on their screen.
+
+```java
+// PaymentService.java
+private static String generateQrCodeBase64(String value) {
+    QRCodeWriter writer = new QRCodeWriter();
+    BitMatrix matrix = writer.encode(value, BarcodeFormat.QR_CODE, 320, 320);
+    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+    MatrixToImageWriter.writeToStream(matrix, "PNG", outputStream);
+    return Base64.getEncoder().encodeToString(outputStream.toByteArray());
+}
+```
+
+<Warning>
+  `STRIPE_API_KEY` (mapped to `app.payment.stripe.secret-key`) must be set in the environment for real payments to be processed. Without it, all sessions are mocked and marked as paid immediately. Never expose the Stripe secret key in frontend code or source control.
+</Warning>

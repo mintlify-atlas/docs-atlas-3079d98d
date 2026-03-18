@@ -1,0 +1,198 @@
+---
+title: "External Services"
+---
+
+RideShare Live integrates with five external services for email, payments, SMS, maps, and push notifications. Each service requires credentials stored as environment variables — never hardcoded in source files.
+
+<Accordion title="Gmail SMTP (Email OTP & notifications)">
+
+<Warning>
+Keep your Google App Password private. It grants full Gmail send access and cannot be scoped to a single operation.
+</Warning>
+
+Gmail SMTP is used to send signup OTP emails, welcome messages, and payment confirmations. The backend reads the following variables:
+
+| Variable | Value |
+|---|---|
+| `MAIL_HOST` | `smtp.gmail.com` |
+| `MAIL_PORT` | `587` |
+| `MAIL_USERNAME` | Your Gmail address |
+| `MAIL_PASSWORD` | 16-character App Password |
+| `MAIL_FROM_ADDRESS` | The sender address shown to users |
+| `MAIL_FROM_NAME` | `RideShare Live` (or your display name) |
+| `MAIL_OTP_ENABLED` | `true` to activate email OTP on signup |
+
+**Setup steps:**
+
+1. Sign in to your Google Account and go to [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+2. Under "Select app" choose **Mail**; under "Select device" choose **Other** and type `RideShare Live`.
+3. Click **Generate**. Google displays a 16-character password — copy it immediately, it is shown only once.
+4. Add the password to `MAIL_PASSWORD` in your `.env` file (spaces in the password are optional; the backend accepts it either way).
+5. Ensure IMAP / SMTP is enabled in Gmail Settings → See all settings → Forwarding and POP/IMAP.
+
+**Minimal `.env` block:**
+
+```env
+MAIL_HOST=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USERNAME=yourapp@gmail.com
+MAIL_PASSWORD=abcdefghijklmnop
+MAIL_FROM_ADDRESS=yourapp@gmail.com
+MAIL_FROM_NAME=RideShare Live
+MAIL_OTP_ENABLED=true
+MAIL_SKIP_IF_NO_SMTP_HOST=false
+```
+
+**OTP behaviour** is controlled by additional variables:
+
+```env
+AUTH_SIGNUP_OTP_ENABLED=true
+AUTH_SIGNUP_OTP_TTL_SECONDS=300
+AUTH_SIGNUP_OTP_RESEND_DELAY_SECONDS=30
+AUTH_SIGNUP_OTP_EXPOSE_DEV_OTP=false
+```
+
+Set `MAIL_OTP_ENABLED=false` and `AUTH_SIGNUP_OTP_ENABLED=false` for local development without a real SMTP connection. The backend will skip email sending silently when `MAIL_SKIP_IF_NO_SMTP_HOST=true` (the default).
+
+</Accordion>
+
+<Accordion title="Stripe (Payment processing)">
+
+<Warning>
+Never expose your Stripe secret key (`sk_...`) on the frontend or in public repositories. Use test keys (`sk_test_...`) for development and live keys (`sk_live_...`) only in production.
+</Warning>
+
+Stripe is used for card payment processing via Stripe Checkout. The backend uses:
+
+| Variable | Description |
+|---|---|
+| `STRIPE_SECRET_KEY` | Secret API key from the Stripe Dashboard |
+| `STRIPE_CURRENCY` | ISO 4217 code, defaults to `inr` |
+| `STRIPE_SUCCESS_URL` | Redirect after a successful checkout session |
+| `STRIPE_CANCEL_URL` | Redirect if the user cancels checkout |
+
+These map to `application.properties`:
+
+```properties
+app.payment.stripe.secret-key=${STRIPE_SECRET_KEY:}
+app.payment.stripe.currency=${STRIPE_CURRENCY:inr}
+app.payment.stripe.success-url=${STRIPE_SUCCESS_URL:http://localhost:5173}
+app.payment.stripe.cancel-url=${STRIPE_CANCEL_URL:http://localhost:5173}
+```
+
+**Setup steps:**
+
+1. Create a free account at [https://dashboard.stripe.com/register](https://dashboard.stripe.com/register).
+2. In the Dashboard, navigate to **Developers → API keys**.
+3. Copy the **Secret key** (starts with `sk_test_` for test mode).
+4. Add it to `STRIPE_SECRET_KEY` in your `.env`.
+5. To receive webhook events (e.g. payment confirmations), go to **Developers → Webhooks**, add an endpoint pointing to `https://your-domain/stripe/webhook`, and copy the **Signing secret** (`whsec_...`) into a `STRIPE_WEBHOOK_SECRET` variable.
+
+**Minimal `.env` block:**
+
+```env
+STRIPE_SECRET_KEY=sk_test_51...
+STRIPE_CURRENCY=inr
+STRIPE_SUCCESS_URL=http://localhost:5173
+STRIPE_CANCEL_URL=http://localhost:5173
+```
+
+Leave `STRIPE_SECRET_KEY` empty (`STRIPE_SECRET_KEY=`) during local development when Stripe payments are not needed — the payment endpoints will return an error if a Checkout session is requested.
+
+</Accordion>
+
+<Accordion title="Twilio (SMS notifications)">
+
+<Warning>
+Your Twilio Auth Token is equivalent to a password. Rotate it immediately from the Twilio Console if it is ever leaked.
+</Warning>
+
+Twilio sends SMS notifications for ride events and OTP delivery when email is unavailable.
+
+| Variable | Description |
+|---|---|
+| `TWILIO_ACCOUNT_SID` | Account SID from the Twilio Console (starts with `AC`) |
+| `TWILIO_AUTH_TOKEN` | Auth Token from the Twilio Console |
+| `TWILIO_PHONE_NUMBER` | Verified Twilio sending number in E.164 format |
+
+**Setup steps:**
+
+1. Create a free account at [https://www.twilio.com/try-twilio](https://www.twilio.com/try-twilio).
+2. From the **Console Dashboard**, copy your **Account SID** and **Auth Token**.
+3. Navigate to **Phone Numbers → Manage → Buy a number** to get a sending number, or use the trial number provided at signup.
+4. Add the values to your `.env`:
+
+```env
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_auth_token_here
+TWILIO_PHONE_NUMBER=+15005550006
+```
+
+During development, Twilio's magic test number `+15005550006` can be used as the sender and `+15005550010` as the recipient for testing without spending credits.
+
+</Accordion>
+
+<Accordion title="Google Maps API (Location features)">
+
+<Warning>
+Restrict your Google Maps API key by HTTP referrer (for frontend use) or IP address (for backend use) in the Google Cloud Console. Unrestricted keys can be abused and may incur unexpected charges.
+</Warning>
+
+Google Maps Platform is used for location autocomplete, geocoding, and route display.
+
+| Variable | Description |
+|---|---|
+| `GOOGLE_MAPS_API_KEY` | API key from Google Cloud Console |
+
+**Setup steps:**
+
+1. Go to [https://console.cloud.google.com](https://console.cloud.google.com) and create or select a project.
+2. Navigate to **APIs & Services → Library** and enable the following APIs:
+   - Maps JavaScript API
+   - Geocoding API
+   - Places API
+   - Directions API
+3. Navigate to **APIs & Services → Credentials** and click **Create Credentials → API key**.
+4. Copy the key and add it to your `.env`:
+
+```env
+GOOGLE_MAPS_API_KEY=AIzaSy...
+```
+
+5. In **Credential settings**, add your allowed HTTP referrers (e.g. `http://localhost:5173/*` for local dev) to prevent unauthorised use.
+
+<Info>
+The frontend currently uses OpenStreetMap (Nominatim + OpenStreetMap tiles) for geocoding and map rendering, which requires no API key. The Google Maps API key is used when you enable the Google Maps-backed map tile layer or the Places autocomplete widget.
+</Info>
+
+</Accordion>
+
+<Accordion title="Firebase (Push notifications)">
+
+<Warning>
+The Firebase service account JSON file contains a private key. Never commit it to version control. Load it at runtime via an environment variable or a secrets manager.
+</Warning>
+
+Firebase Cloud Messaging (FCM) delivers push notifications to rider and driver mobile apps.
+
+**Setup steps:**
+
+1. Go to [https://console.firebase.google.com](https://console.firebase.google.com) and create a project.
+2. Navigate to **Project settings → Service accounts**.
+3. Click **Generate new private key**. A JSON file is downloaded.
+4. Either:
+   - Store the entire JSON as a single environment variable `FIREBASE_SERVICE_ACCOUNT_JSON`, or
+   - Mount the file into the container and point `GOOGLE_APPLICATION_CREDENTIALS` at its path.
+5. In your Spring Boot service, initialise the Firebase Admin SDK using the credentials at startup.
+
+```env
+# Option A: path to downloaded JSON file
+GOOGLE_APPLICATION_CREDENTIALS=/secrets/firebase-service-account.json
+
+# Option B: inline JSON (useful for container environments)
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"..."}
+```
+
+In the Firebase Console, navigate to **Cloud Messaging** to obtain the **Server key** if you are using the legacy FCM HTTP API instead of the Admin SDK.
+
+</Accordion>

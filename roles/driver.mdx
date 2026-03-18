@@ -1,0 +1,160 @@
+---
+title: "Driver"
+---
+
+A **Driver** is a user who accepts ride requests, picks up riders, and completes trips through RideShare Live. Drivers manage their availability, share their live GPS location during a trip, and verify each journey stage using OTP codes.
+
+## What a Driver can do
+
+<CardGroup cols={2}>
+  <Card title="View ride requests" icon="list">
+    See all open `REQUESTED` rides in real time, refreshed every 10 seconds, scored by fare-to-distance yield.
+  </Card>
+  <Card title="Accept a ride" icon="check">
+    Accept any unassigned request while in `ONLINE` availability mode. The ride is assigned to the driver's user ID.
+  </Card>
+  <Card title="Share live location" icon="map-pin">
+    Push GPS coordinates to `POST /rides/location/{rideId}` manually or enable auto-share (every 12 seconds) so the rider sees the driver on the map.
+  </Card>
+  <Card title="Verify with OTP" icon="key">
+    Enter the rider's pickup OTP to mark the ride `PICKED`, and the complete OTP to mark it `COMPLETED`.
+  </Card>
+  <Card title="Cancel a ride" icon="x">
+    Cancel an accepted ride with a reason: Vehicle issue, Unable to reach pickup, Emergency, or Traffic blockage.
+  </Card>
+  <Card title="Earnings snapshot" icon="chart-bar">
+    View today's earnings, last 7 days earnings, and average fare per ride from the completed history.
+  </Card>
+</CardGroup>
+
+## Driver dashboard
+
+The `DriverDashboard.jsx` component is the main view for a signed-in driver. Key sections:
+
+| Section | Description |
+|---|---|
+| **Operational pulse** | Sidebar showing open request count, weekly earnings (INR), and average driver rating from completed ride history. |
+| **Stat bar** | Total completed rides, rides in progress, cumulative earnings, and average rating. |
+| **Recommended request** | Highlights the highest-scoring open request using a quality algorithm that weighs fare-per-km yield, distance bracket, and payment mode. |
+| **Availability controls** | Three-mode toggle: **ONLINE** (accepts new rides), **BREAK** (pauses new demand, keeps active trips), **OFFLINE** (stops all demand actions). |
+| **Auto-assign** | When enabled and the driver is `ONLINE`, the dashboard automatically accepts the first unassigned `REQUESTED` ride it finds. |
+| **Earnings snapshot** | Today / last 7 days / average-per-ride breakdown computed from the completed ride history. |
+| **Live map** | `LiveMapPanel` centered on Multai, India for spatial context. |
+| **Active demand** | Card grid showing every active ride. Each card has three columns: Ride overview (details + quality score), Driver actions (accept / share location / pickup verification), and Ride controls (cancellation + OTP summary). |
+| **Feedback panel** | `RideFeedbackPanel` with `userRole="DRIVER"` — surfaces completed rides that have not been rated by the driver. |
+| **Ride history** | `RideHistory` table of the driver's own completed and cancelled rides, sorted by ID descending. |
+
+### Active demand card layout
+
+Each ride card in the Active demand section has three columns:
+
+**Ride overview** — pickup, drop, fare (INR), payment mode + payment status, distance (km), and request quality score (0–100).
+
+**Driver actions**
+- `REQUESTED` & unassigned: **Accept** button (disabled unless `ONLINE`).
+- `ACCEPTED` or `PICKED` & assigned to this driver: **Allow location & share** and **Auto-share location** / **Stop auto-share** buttons.
+- Pickup verification (status `ACCEPTED`): OTP input + **Mark picked** button.
+- Drop verification (status `PICKED`): OTP input + **Complete ride** button.
+
+**Ride controls** — cancellation reason dropdown and **Cancel ride** button. OTP summary panel shows the pickup OTP and complete OTP generated at acceptance.
+
+### Request quality scoring
+
+The `getQualityScore` function scores each open request 1–99:
+
+- Base score: 40
+- Fare-per-km yield: up to +30 points
+- Short trips (≤ 20 km): +12; very long trips (> 45 km): −10
+- Non-cash payment: +5; cash: −3
+- Unassigned and requested: +8
+
+A score ≥ 80 is **High**, 60–79 is **Medium**, below 60 is **Low**.
+
+## Signing up as a driver
+
+```json
+POST /auth/signup
+Content-Type: application/json
+
+{
+  "name": "Amit Kumar",
+  "email": "amit@example.com",
+  "password": "SecurePass123!",
+  "role": "DRIVER"
+}
+```
+
+The response contains a JWT access token. Include it as `Authorization: Bearer <token>` on all driver-specific requests.
+
+## Driver API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/auth/signup` | Register a driver account |
+| `POST` | `/auth/login` | Authenticate and receive JWT |
+| `GET` | `/rides/requested` | List all unassigned `REQUESTED` rides |
+| `GET` | `/rides/history` | Fetch all rides (filtered client-side to this driver's completed rides) |
+| `POST` | `/rides/status/{rideId}` | Update ride status (`ACCEPTED`, `PICKED`, `COMPLETED`) |
+| `POST` | `/rides/location/{rideId}` | Push driver GPS coordinates (`{ lat, lon }`) |
+| `POST` | `/rides/cancel/{rideId}` | Cancel a ride with a reason string |
+| `POST` | `/rides/feedback/{rideId}` | Submit driver rating and comment |
+| `GET` | `/user-settings` | Retrieve account settings |
+| `PUT` | `/user-settings` | Update account settings |
+
+### Update ride status
+
+```bash
+# Accept a ride
+curl -X POST http://localhost:8080/rides/status/42 \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{"status": "ACCEPTED", "driverId": 7}'
+
+# Mark rider as picked up (requires rider's pickup OTP)
+curl -X POST http://localhost:8080/rides/status/42 \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{"status": "PICKED", "otp": "3847"}'
+
+# Complete the ride (requires rider's complete OTP)
+curl -X POST http://localhost:8080/rides/status/42 \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{"status": "COMPLETED", "otp": "9215"}'
+```
+
+### Share driver location
+
+```bash
+curl -X POST http://localhost:8080/rides/location/42 \
+  -H "Authorization: Bearer eyJhbGci..." \
+  -H "Content-Type: application/json" \
+  -d '{"lat": 21.7740, "lon": 78.2570}'
+```
+
+<Note>
+Driver location updates are written to Redis and used for nearby-driver queries. The dashboard auto-share interval is 12 seconds when tracking is active. The backend polls location from the cache rather than the database to keep query latency low.
+</Note>
+
+## Typical driver workflow
+
+<Steps>
+  <Step title="Sign in">
+    Call `POST /auth/login` with driver credentials. Store the returned JWT and keep the availability mode set to **ONLINE**.
+  </Step>
+  <Step title="View incoming requests">
+    The Active demand section refreshes every 10 seconds via `GET /rides/requested`. Each card shows the quality score so you can prioritise the best fare-to-distance option.
+  </Step>
+  <Step title="Accept a ride">
+    Click **Accept** on an unassigned `REQUESTED` ride. The dashboard calls `POST /rides/status/{rideId}` with `status: "ACCEPTED"` and your `driverId`. The ride is now assigned to you and OTP codes are generated.
+  </Step>
+  <Step title="Send OTP to rider">
+    The OTP summary panel displays the pickup OTP. Share it with the rider verbally when you arrive at the pickup location. The rider verifies it in their app and you enter it in the **Pickup verification** input, then click **Mark picked**.
+  </Step>
+  <Step title="Update location during trip">
+    Click **Allow location & share** or enable **Auto-share location** to push GPS coordinates every 12 seconds so the rider can track you on the live map.
+  </Step>
+  <Step title="Complete the ride">
+    At the destination, the rider provides the complete OTP. Enter it in the **Drop verification** input and click **Complete ride**. The ride moves to `COMPLETED` and earnings are reflected in the snapshot.
+  </Step>
+</Steps>

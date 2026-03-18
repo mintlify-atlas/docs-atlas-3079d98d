@@ -1,0 +1,443 @@
+---
+title: "Rides API"
+description: "Book rides, estimate fares, update ride status, track drivers, and submit feedback."
+---
+
+All ride endpoints are under `/api/v1/rides`. Most require a valid Bearer token. The only public endpoint is `GET /rides/estimate`.
+
+## Ride Status Values
+
+The `Ride.Status` enum defines all possible states a ride can be in:
+
+| Status | Description |
+|---|---|
+| `REQUESTED` | Rider has booked; waiting for a driver to accept |
+| `ACCEPTED` | A driver has accepted the ride |
+| `PICKED` | Driver has picked up the rider (OTP verified) |
+| `COMPLETED` | Ride finished |
+| `CANCELLED` | Ride was cancelled by either party |
+
+---
+
+## POST /rides/book
+
+Books a new ride for the authenticated rider. The `riderId` and initial `status` (`REQUESTED`) are set server-side.
+
+**Requires auth.**
+
+### Request body — Ride object
+
+<ParamField body="pickupLocation" type="string">
+  Human-readable pickup address or coordinates string.
+</ParamField>
+
+<ParamField body="dropLocation" type="string">
+  Human-readable drop-off address or coordinates string.
+</ParamField>
+
+<ParamField body="fare" type="number">
+  Agreed fare amount. Use `/rides/estimate` to calculate this first.
+</ParamField>
+
+<ParamField body="paymentMode" type="string">
+  Payment method (e.g. `ONLINE`, `CASH`).
+</ParamField>
+
+<ParamField body="rideType" type="string">
+  Type of ride — passed through to the estimator (e.g. `STANDARD`, `PREMIUM`).
+</ParamField>
+
+### Response — 200
+
+Returns the saved `Ride` object including the generated `id` and `startOtp`.
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/rides/book \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pickupLocation": "Connaught Place, Delhi",
+    "dropLocation": "Indira Gandhi International Airport",
+    "fare": 320,
+    "paymentMode": "ONLINE"
+  }'
+```
+
+```json Response
+{
+  "id": 101,
+  "pickupLocation": "Connaught Place, Delhi",
+  "dropLocation": "Indira Gandhi International Airport",
+  "fare": 320.0,
+  "riderId": 42,
+  "driverId": null,
+  "status": "REQUESTED",
+  "paymentMode": "ONLINE",
+  "startOtp": "7821",
+  "createdAt": "2026-03-18T10:00:00Z"
+}
+```
+</CodeGroup>
+
+---
+
+## GET /rides/estimate
+
+Calculates an estimated fare for a given distance and ride type. No authentication required.
+
+### Query parameters
+
+<ParamField query="distanceKm" type="number" required>
+  Distance of the trip in kilometres.
+</ParamField>
+
+<ParamField query="rideType" type="string">
+  Ride category (e.g. `STANDARD`, `PREMIUM`). Optional — falls back to the default tier.
+</ParamField>
+
+### Response — 200
+
+Returns the estimate result object from `RideService.estimateRide`.
+
+<CodeGroup>
+```bash curl
+curl "http://localhost:8080/api/v1/rides/estimate?distanceKm=12.5&rideType=STANDARD"
+```
+
+```json Response
+{
+  "distanceKm": 12.5,
+  "rideType": "STANDARD",
+  "estimatedFare": 187.5
+}
+```
+</CodeGroup>
+
+---
+
+## POST /rides/status/{rideId}
+
+Updates the status of a ride. Used by drivers to progress a ride through its lifecycle.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="rideId" type="number" required>
+  ID of the ride to update.
+</ParamField>
+
+### Request body
+
+<ParamField body="status" type="string" required>
+  New status. Must be a valid `Ride.Status` value: `ACCEPTED`, `PICKED`, `COMPLETED`, or `CANCELLED`.
+</ParamField>
+
+<ParamField body="driverId" type="string">
+  String ID of the driver accepting the ride. Required when transitioning to `ACCEPTED`.
+</ParamField>
+
+<ParamField body="otp" type="string">
+  Start OTP provided by the rider. Required when transitioning to `PICKED`.
+</ParamField>
+
+### Response — 200
+
+Returns the updated `Ride` object.
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/rides/status/101 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "ACCEPTED", "driverId": "7"}'
+```
+
+```json Response
+{
+  "id": 101,
+  "status": "ACCEPTED",
+  "driverId": 7,
+  "acceptedAt": "2026-03-18T10:02:00Z"
+}
+```
+</CodeGroup>
+
+---
+
+## GET /rides/history
+
+Returns all rides associated with the authenticated user (as rider or driver).
+
+**Requires auth.**
+
+### Response — 200
+
+Array of `Ride` objects.
+
+<CodeGroup>
+```bash curl
+curl http://localhost:8080/api/v1/rides/history \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+[
+  {
+    "id": 101,
+    "pickupLocation": "Connaught Place, Delhi",
+    "dropLocation": "IGI Airport",
+    "status": "COMPLETED",
+    "fare": 320.0,
+    "riderId": 42
+  }
+]
+```
+</CodeGroup>
+
+---
+
+## GET /rides/requested
+
+Returns all rides currently in `REQUESTED` status. Intended for drivers polling for available rides.
+
+**Requires auth.**
+
+### Response — 200
+
+Array of `Ride` objects with `status: "REQUESTED"`.
+
+<CodeGroup>
+```bash curl
+curl http://localhost:8080/api/v1/rides/requested \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+[
+  {
+    "id": 102,
+    "pickupLocation": "Lajpat Nagar, Delhi",
+    "dropLocation": "Noida Sector 18",
+    "status": "REQUESTED",
+    "fare": 210.0
+  }
+]
+```
+</CodeGroup>
+
+---
+
+## GET /rides/status/{rideId}
+
+Fetches the current details of a single ride.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="rideId" type="number" required>
+  ID of the ride to fetch.
+</ParamField>
+
+### Response — 200 / 404
+
+Returns the `Ride` object, or `404` if not found.
+
+<CodeGroup>
+```bash curl
+curl http://localhost:8080/api/v1/rides/status/101 \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+{
+  "id": 101,
+  "status": "PICKED",
+  "driverId": 7,
+  "riderId": 42,
+  "driverLat": 28.6149,
+  "driverLon": 77.2090
+}
+```
+</CodeGroup>
+
+---
+
+## GET /rides/drivers/nearby
+
+Returns a list of nearby drivers from the Redis location cache.
+
+**Requires auth.**
+
+### Query parameters
+
+<ParamField query="lat" type="number" required>
+  Latitude of the search centre.
+</ParamField>
+
+<ParamField query="lon" type="number" required>
+  Longitude of the search centre.
+</ParamField>
+
+<ParamField query="radiusKm" type="number">
+  Search radius in kilometres. Defaults to `5`.
+</ParamField>
+
+<ParamField query="limit" type="number">
+  Maximum number of results. Defaults to `10`.
+</ParamField>
+
+### Response — 200
+
+Array of nearby driver objects, or an empty array if Redis is unavailable.
+
+<CodeGroup>
+```bash curl
+curl "http://localhost:8080/api/v1/rides/drivers/nearby?lat=28.7041&lon=77.1025&radiusKm=3" \
+  -H "Authorization: Bearer <token>"
+```
+
+```json Response
+[
+  { "driverId": 7, "lat": 28.7012, "lon": 77.1018, "distanceKm": 0.34 },
+  { "driverId": 9, "lat": 28.7065, "lon": 77.1041, "distanceKm": 0.29 }
+]
+```
+</CodeGroup>
+
+---
+
+## POST /rides/feedback/{rideId}
+
+Submits a rating and optional comment for a completed ride.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="rideId" type="number" required>
+  ID of the completed ride.
+</ParamField>
+
+### Request body
+
+<ParamField body="rating" type="number" required>
+  Integer rating from `1` to `5`.
+</ParamField>
+
+<ParamField body="comment" type="string">
+  Optional text feedback.
+</ParamField>
+
+### Response — 200
+
+Returns the updated `Ride` object with the feedback saved.
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/rides/feedback/101 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"rating": 5, "comment": "Smooth ride, very punctual!"}'
+```
+
+```json Response
+{
+  "id": 101,
+  "riderRating": 5,
+  "riderFeedback": "Smooth ride, very punctual!",
+  "status": "COMPLETED"
+}
+```
+</CodeGroup>
+
+---
+
+## POST /rides/location/{rideId}
+
+Updates the driver's live GPS coordinates for an active ride. Consumed by the frontend map and broadcast over WebSocket.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="rideId" type="number" required>
+  ID of the active ride.
+</ParamField>
+
+### Request body
+
+<ParamField body="lat" type="number" required>
+  Driver's current latitude.
+</ParamField>
+
+<ParamField body="lon" type="number" required>
+  Driver's current longitude.
+</ParamField>
+
+### Response — 200
+
+Returns the updated `Ride` object with `driverLat`, `driverLon`, and `driverLocationUpdatedAt`.
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/rides/location/101 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"lat": 28.6120, "lon": 77.2091}'
+```
+
+```json Response
+{
+  "id": 101,
+  "driverLat": 28.612,
+  "driverLon": 77.2091,
+  "driverLocationUpdatedAt": "2026-03-18T10:10:00Z"
+}
+```
+</CodeGroup>
+
+---
+
+## POST /rides/cancel/{rideId}
+
+Cancels a ride. Can be called by the rider or the driver.
+
+**Requires auth.**
+
+### Path parameters
+
+<ParamField path="rideId" type="number" required>
+  ID of the ride to cancel.
+</ParamField>
+
+### Request body
+
+<ParamField body="reason" type="string">
+  Optional cancellation reason (up to 600 characters). The request body itself is optional.
+</ParamField>
+
+### Response — 200
+
+Returns the cancelled `Ride` object with `status: "CANCELLED"`, `cancelledBy`, and any applicable `cancellationFee`.
+
+<CodeGroup>
+```bash curl
+curl -X POST http://localhost:8080/api/v1/rides/cancel/101 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "Change of plans"}'
+```
+
+```json Response
+{
+  "id": 101,
+  "status": "CANCELLED",
+  "cancelledBy": "RIDER",
+  "cancellationReason": "Change of plans",
+  "cancellationFee": 0.0
+}
+```
+</CodeGroup>
